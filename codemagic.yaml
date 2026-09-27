@@ -27,6 +27,11 @@ workflows:
           test -x "$app_path/PlugIns/StockKeyboard.appex/StockKeyboard"
           extension_point="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$app_path/PlugIns/StockKeyboard.appex/Info.plist")"
           test "$extension_point" = 'com.apple.keyboard-service'
+          principal_class="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$app_path/PlugIns/StockKeyboard.appex/Info.plist")"
+          test "$principal_class" = 'StockKeyboard.KeyboardViewController'
+          extension_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/PlugIns/StockKeyboard.appex/Info.plist")"
+          app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Info.plist")"
+          test "$extension_version" = "$app_version"
           mkdir -p "$package_dir/Payload"
           cp -R "$app_path" "$package_dir/Payload/Runner.app"
           mkdir -p "$(dirname "$ipa_path")"

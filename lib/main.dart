@@ -32,6 +32,7 @@ class _HomePageState extends State<HomePage> {
   final _weight = TextEditingController();
   List<Category> _categories = [];
   Category? _selected;
+  CatalogDiagnostics? _diagnostics;
   String? _result;
   String? _error;
   bool _loading = true;
@@ -46,6 +47,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _load() async {
     try {
+      final diagnostics = await _store.diagnostics();
+      if (mounted) setState(() => _diagnostics = diagnostics);
       final data = await _store.load();
       if (mounted) {
         setState(() {
@@ -175,6 +178,18 @@ class _HomePageState extends State<HomePage> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                if (_diagnostics != null)
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: SelectableText(
+                        '安装诊断：版本 ${_diagnostics!.version}\n'
+                        '主 App：${_diagnostics!.appBundleId}\n'
+                        '键盘：${_diagnostics!.keyboardBundleId}（${_diagnostics!.keyboardEmbedded ? '已打包' : '缺失'}）\n'
+                        '共享数据权限：${_diagnostics!.appGroupAvailable ? '可用' : '不可用'}',
+                      ),
+                    ),
+                  ),
                 const Text(
                   '查询计算',
                   style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),

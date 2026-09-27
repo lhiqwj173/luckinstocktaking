@@ -40,6 +40,7 @@ final class KeyboardViewController: UIInputViewController {
 
   override func viewDidLoad() {
     super.viewDidLoad()
+    NSLog("StockKeyboard: viewDidLoad")
     view.backgroundColor = .secondarySystemBackground
     view.heightAnchor.constraint(equalToConstant: 350).isActive = true
     root.axis = .vertical
@@ -107,6 +108,7 @@ final class KeyboardViewController: UIInputViewController {
 
   override func viewWillAppear(_ animated: Bool) {
     super.viewWillAppear(animated)
+    NSLog("StockKeyboard: viewWillAppear")
     loadCategories()
   }
 
@@ -127,10 +129,12 @@ final class KeyboardViewController: UIInputViewController {
 
   private func loadCategories() {
     guard let defaults = UserDefaults(suiteName: group) else {
+      NSLog("StockKeyboard: shared defaults unavailable")
       titleLabel.text = "共享数据不可用：检查签名"
       return
     }
     guard let raw = defaults.string(forKey: key) else {
+      NSLog("StockKeyboard: no catalog data")
       categories = []
       titleLabel.text = "请先在主 App 录入品类"
       showCategories()
@@ -142,6 +146,7 @@ final class KeyboardViewController: UIInputViewController {
       fatalError("品类数据损坏：\(error)")
     }
     titleLabel.text = "选择品类并输入克数"
+    NSLog("StockKeyboard: catalog loaded")
     showCategories()
   }
 
