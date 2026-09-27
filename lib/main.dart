@@ -42,8 +42,8 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _load();
-    _query.addListener(_refresh);
-    _weight.addListener(_refresh);
+    _query.addListener(_queryChanged);
+    _weight.addListener(_weightChanged);
   }
 
   Future<void> _load() async {
@@ -74,8 +74,13 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _refresh() => setState(() {
+  void _queryChanged() => setState(() {
     _selected = null;
+    _result = null;
+    _error = null;
+  });
+
+  void _weightChanged() => setState(() {
     _result = null;
     _error = null;
   });
@@ -168,7 +173,7 @@ class _HomePageState extends State<HomePage> {
             controller: controller,
             maxLines: 10,
             decoration: const InputDecoration(
-              hintText: '从 Excel 复制 6 列，包含首行表头，再粘贴到这里',
+              hintText: '从 Excel 复制 4 列，包含首行表头，再粘贴到这里',
               border: OutlineInputBorder(),
             ),
           ),
@@ -250,7 +255,10 @@ class _HomePageState extends State<HomePage> {
         _error = null;
       });
     } on FormatException catch (error) {
-      setState(() => _error = error.message);
+      setState(() {
+        _result = null;
+        _error = error.message;
+      });
     }
   }
 
@@ -294,13 +302,21 @@ class _HomePageState extends State<HomePage> {
                     border: OutlineInputBorder(),
                   ),
                 ),
+                if (_query.text.trim().isNotEmpty && matches.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('没有匹配的品类，请检查名称或别名。'),
+                  ),
                 if (matches.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   ...matches.map(
                     (category) => ListTile(
                       dense: true,
                       title: Text(category.name),
-                      subtitle: Text(category.aliases.join('、')),
+                      subtitle: Text(
+                        '${category.type.label} · 单份 ${category.singleServingGrams} 克'
+                        '${category.aliases.isEmpty ? '' : ' · 别名：${category.aliases.join('、')}'}',
+                      ),
                       selected: identical(_selected, category),
                       onTap: () => setState(() {
                         _selected = category;
@@ -310,29 +326,28 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _weight,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
+                if (_selected != null) ...[
+                  const SizedBox(height: 12),
+                  Text('已匹配：${_selected!.name}（${_selected!.type.label}）'),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _weight,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: '称重（克）',
+                      border: OutlineInputBorder(),
+                    ),
                   ),
-                  decoration: const InputDecoration(
-                    labelText: '称重（克）',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                FilledButton(onPressed: _calculate, child: const Text('计算')),
-                if (_selected != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text('已选：${_selected!.name}'),
-                  ),
+                  const SizedBox(height: 12),
+                  FilledButton(onPressed: _calculate, child: const Text('计算')),
+                ],
                 if (_result != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
                     child: SelectableText(
-                      '结果：$_result',
+                      '结果：$_result 份',
                       style: Theme.of(context).textTheme.headlineMedium,
                     ),
                   ),
@@ -375,14 +390,16 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ],
                 ),
-                const Text('品类较多时，点“复制”将表格粘贴到 Excel 修改，再复制包含表头的 6 列，点“表格”批量导入。同名品类会更新，其余品类保留。'),
+                const Text(
+                  '品类较多时，复制表格到 Excel 修改，再复制包含表头的 4 列批量导入。同名品类会更新，其余品类保留。',
+                ),
                 if (_categories.isEmpty) const Text('暂无品类。点击右侧加号录入。'),
                 ..._categories.map(
                   (category) => Card(
                     child: ListTile(
                       title: Text(category.name),
                       subtitle: Text(
-                        '净重 ÷ ${category.referenceGrams} 克 × ${category.referenceQuantity}；容器重 ${category.tareGrams} 克；保留 ${category.decimals} 位小数',
+                        '${category.type.label} · (称重 − ${category.type.tareGrams} 克) ÷ ${category.singleServingGrams} 克 · 结果 0～1 份',
                       ),
                       trailing: PopupMenuButton<String>(
                         onSelected: (value) => value == 'edit'
@@ -398,7 +415,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const SizedBox(height: 20),
                 const Text(
-                  '跨 App 使用：在“快捷指令”中添加“称重盘点计算”动作，将“品类名称或别名”和“称重（克）”都设为“每次询问”，再添加“显示结果”和“拷贝至剪贴板”。可在“设置 → 辅助功能 → 触控 → 轻点背面”中指定该快捷指令。品类和规则在本 App 修改后立即供快捷指令使用。',
+                  '跨 App 使用：在“快捷指令”中依次添加“匹配称重品类”（名称设为“每次询问”）、“显示提醒”（显示匹配结果）、“称重盘点计算”（品类接上一步匹配结果，称重设为“每次询问”）、“显示结果”。匹配不到会直接停止。可在“设置 → 辅助功能 → 触控 → 轻点背面”中指定该快捷指令。',
                 ),
               ],
             ),
@@ -415,8 +432,8 @@ class CategoryDialog extends StatefulWidget {
 
 class _CategoryDialogState extends State<CategoryDialog> {
   final _form = GlobalKey<FormState>();
-  late final TextEditingController name, aliases, tare, grams, quantity;
-  late int decimals;
+  late final TextEditingController name, aliases, grams;
+  late WeighingType type;
 
   @override
   void initState() {
@@ -424,39 +441,30 @@ class _CategoryDialogState extends State<CategoryDialog> {
     final c = widget.original;
     name = TextEditingController(text: c?.name ?? '');
     aliases = TextEditingController(text: c?.aliases.join('、') ?? '');
-    tare = TextEditingController(text: c?.tareGrams.toString() ?? '0');
-    grams = TextEditingController(text: c?.referenceGrams.toString() ?? '');
-    quantity = TextEditingController(
-      text: c?.referenceQuantity.toString() ?? '1',
-    );
-    decimals = c?.decimals ?? 0;
+    grams = TextEditingController(text: c?.singleServingGrams.toString() ?? '');
+    type = c?.type ?? WeighingType.portionBox;
   }
 
   @override
   void dispose() {
-    for (final c in [name, aliases, tare, grams, quantity]) {
+    for (final c in [name, aliases, grams]) {
       c.dispose();
     }
     super.dispose();
   }
 
-  Widget _number(
-    String label,
-    TextEditingController controller, {
-    bool allowZero = false,
-  }) => TextFormField(
-    controller: controller,
-    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-    decoration: InputDecoration(labelText: label),
-    validator: (value) {
-      final number = double.tryParse((value ?? '').trim());
-      return number != null &&
-              number.isFinite &&
-              (allowZero ? number >= 0 : number > 0)
-          ? null
-          : '请输入有效数值';
-    },
-  );
+  Widget _number(String label, TextEditingController controller) =>
+      TextFormField(
+        controller: controller,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: InputDecoration(labelText: label),
+        validator: (value) {
+          final number = double.tryParse((value ?? '').trim());
+          return number != null && number.isFinite && number > 0
+              ? null
+              : '请输入大于 0 的有效数值';
+        },
+      );
 
   void _save() {
     if (!_form.currentState!.validate()) return;
@@ -467,10 +475,8 @@ class _CategoryDialogState extends State<CategoryDialog> {
           .map((e) => e.trim())
           .where((e) => e.isNotEmpty)
           .toList(),
-      tareGrams: double.parse(tare.text.trim()),
-      referenceGrams: double.parse(grams.text.trim()),
-      referenceQuantity: double.parse(quantity.text.trim()),
-      decimals: decimals,
+      type: type,
+      singleServingGrams: double.parse(grams.text.trim()),
     );
     category.validate();
     Navigator.pop(context, category);
@@ -497,19 +503,22 @@ class _CategoryDialogState extends State<CategoryDialog> {
                 controller: aliases,
                 decoration: const InputDecoration(labelText: '别名（逗号分隔，可选）'),
               ),
-              _number('容器重（克）', tare, allowZero: true),
-              _number('参考重量（克）', grams),
-              _number('参考数量', quantity),
-              DropdownButtonFormField<int>(
-                initialValue: decimals,
-                decoration: const InputDecoration(labelText: '结果小数位'),
-                items: [0, 1, 2, 3]
-                    .map((n) => DropdownMenuItem(value: n, child: Text('$n 位')))
+              DropdownButtonFormField<WeighingType>(
+                initialValue: type,
+                decoration: const InputDecoration(labelText: '称重类别'),
+                items: WeighingType.values
+                    .map(
+                      (value) => DropdownMenuItem(
+                        value: value,
+                        child: Text(value.label),
+                      ),
+                    )
                     .toList(),
-                onChanged: (value) => setState(() => decimals = value!),
+                onChanged: (value) => setState(() => type = value!),
               ),
+              _number('单份原料重量（克）', grams),
               const SizedBox(height: 8),
-              const Text('计算：(称重 − 容器重) ÷ 参考重量 × 参考数量'),
+              Text('计算：(称重 − ${type.tareGrams} 克) ÷ 单份重量；结果限 0～1 份，保留 1 位小数'),
             ],
           ),
         ),

@@ -1,64 +1,64 @@
+enum WeighingType {
+  portionBox('份盒称重', 250),
+  openedClip('开封夹称重', 20);
+
+  const WeighingType(this.label, this.tareGrams);
+  final String label;
+  final double tareGrams;
+  static WeighingType fromKey(String key) => WeighingType.values.firstWhere(
+    (type) => type.name == key,
+    orElse: () => throw FormatException('未知称重类别：$key'),
+  );
+}
+
 class Category {
   const Category({
     required this.name,
     required this.aliases,
-    required this.tareGrams,
-    required this.referenceGrams,
-    required this.referenceQuantity,
-    required this.decimals,
+    required this.type,
+    required this.singleServingGrams,
   });
-
   final String name;
   final List<String> aliases;
-  final double tareGrams;
-  final double referenceGrams;
-  final double referenceQuantity;
-  final int decimals;
+  final WeighingType type;
+  final double singleServingGrams;
 
   factory Category.fromJson(Map<String, dynamic> json) => Category(
     name: json['name'] as String,
     aliases: (json['aliases'] as List<dynamic>).cast<String>(),
-    tareGrams: (json['tareGrams'] as num).toDouble(),
-    referenceGrams: (json['referenceGrams'] as num).toDouble(),
-    referenceQuantity: (json['referenceQuantity'] as num).toDouble(),
-    decimals: json['decimals'] as int,
+    type: WeighingType.fromKey(json['type'] as String),
+    singleServingGrams: (json['singleServingGrams'] as num).toDouble(),
   )..validate();
 
   Map<String, dynamic> toJson() => {
     'name': name,
     'aliases': aliases,
-    'tareGrams': tareGrams,
-    'referenceGrams': referenceGrams,
-    'referenceQuantity': referenceQuantity,
-    'decimals': decimals,
+    'type': type.name,
+    'singleServingGrams': singleServingGrams,
   };
 
   void validate() {
     if (name.trim().isEmpty || aliases.any((e) => e.trim().isEmpty)) {
       throw const FormatException('品类名称和别名不能为空');
     }
-    if (!tareGrams.isFinite ||
-        tareGrams < 0 ||
-        !referenceGrams.isFinite ||
-        referenceGrams <= 0 ||
-        !referenceQuantity.isFinite ||
-        referenceQuantity <= 0 ||
-        decimals < 0 ||
-        decimals > 3) {
-      throw const FormatException('计算规则无效');
+    if (!singleServingGrams.isFinite || singleServingGrams <= 0) {
+      throw const FormatException('单份重量必须大于 0 克');
     }
   }
 
   String calculate(double weightGrams) {
     validate();
     if (!weightGrams.isFinite || weightGrams < 0) {
-      throw const FormatException('称重必须为非负有限数');
+      throw const FormatException('请输入有效的称重（克）');
     }
-    if (weightGrams < tareGrams) throw const FormatException('称重不能小于容器重');
-    final result =
-        (weightGrams - tareGrams) / referenceGrams * referenceQuantity;
-    if (!result.isFinite) throw const FormatException('计算结果超出范围');
-    return result.toStringAsFixed(decimals);
+    final netGrams = weightGrams - type.tareGrams;
+    if (netGrams < 0 || netGrams > singleServingGrams) {
+      throw FormatException(
+        '称重超出 ${type.label} 的合理范围（${type.tareGrams}～${type.tareGrams + singleServingGrams} 克），请检查输入重量',
+      );
+    }
+    final tenths = (netGrams / singleServingGrams * 10 + 0.5).floor();
+    return '${tenths ~/ 10}.${tenths % 10}';
   }
 }
 

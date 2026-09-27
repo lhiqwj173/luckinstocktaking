@@ -1,18 +1,16 @@
 import 'category.dart';
 
-const catalogTsvHeader = '品类\t别名\t容器重(克)\t参考重量(克)\t参考数量\t小数位';
+const catalogTsvHeader = '称重类别\t品类\t别名\t单份重量(克)';
 
 String exportCatalogTsv(List<Category> categories) {
   validateCatalog(categories);
   final rows = <String>[catalogTsvHeader];
   for (final category in categories) {
     final columns = [
+      category.type.label,
       category.name,
       category.aliases.join('、'),
-      category.tareGrams.toString(),
-      category.referenceGrams.toString(),
-      category.referenceQuantity.toString(),
-      category.decimals.toString(),
+      category.singleServingGrams.toString(),
     ];
     if (columns.any(
       (value) =>
@@ -32,31 +30,29 @@ List<Category> importCatalogTsv(String input) {
       .split('\n');
   if (lines.isNotEmpty && lines.last.isEmpty) lines.removeLast();
   if (lines.isEmpty || lines.first != catalogTsvHeader) {
-    throw const FormatException('表格首行必须为：品类、别名、容器重(克)、参考重量(克)、参考数量、小数位');
+    throw const FormatException('表格首行必须为：称重类别、品类、别名、单份重量(克)');
   }
   if (lines.length < 2) throw const FormatException('表格没有品类数据');
   final categories = <Category>[];
   for (var index = 1; index < lines.length; index++) {
     final columns = lines[index].split('\t');
-    if (columns.length != 6) throw FormatException('第 ${index + 1} 行必须有 6 列');
-    final tare = double.tryParse(columns[2].trim());
+    if (columns.length != 4) throw FormatException('第 ${index + 1} 行必须有 4 列');
+    final type = switch (columns[0].trim()) {
+      '份盒称重' => WeighingType.portionBox,
+      '开封夹称重' => WeighingType.openedClip,
+      _ => throw FormatException('第 ${index + 1} 行的称重类别无效'),
+    };
     final grams = double.tryParse(columns[3].trim());
-    final quantity = double.tryParse(columns[4].trim());
-    final decimals = int.tryParse(columns[5].trim());
-    if (tare == null || grams == null || quantity == null || decimals == null) {
-      throw FormatException('第 ${index + 1} 行的计算规则不是有效数字');
-    }
+    if (grams == null) throw FormatException('第 ${index + 1} 行的单份重量不是有效数字');
     final category = Category(
-      name: columns[0].trim(),
-      aliases: columns[1]
+      name: columns[1].trim(),
+      aliases: columns[2]
           .split(RegExp(r'[,，、;；]'))
           .map((value) => value.trim())
           .where((value) => value.isNotEmpty)
           .toList(),
-      tareGrams: tare,
-      referenceGrams: grams,
-      referenceQuantity: quantity,
-      decimals: decimals,
+      type: type,
+      singleServingGrams: grams,
     );
     category.validate();
     categories.add(category);

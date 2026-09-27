@@ -3,41 +3,41 @@ import 'package:luckinstocktaking/catalog_tsv.dart';
 import 'package:luckinstocktaking/category.dart';
 
 void main() {
-  test('Excel 表格批量更新同名规则并增加品类', () {
-    const existing = [
-      Category(
-        name: '咖啡豆',
-        aliases: ['豆'],
-        tareGrams: 20,
-        referenceGrams: 100,
-        referenceQuantity: 10,
-        decimals: 0,
-      ),
-    ];
+  const existing = [
+    Category(
+      name: 'aa大福',
+      aliases: ['旧别名'],
+      type: WeighingType.portionBox,
+      singleServingGrams: 100,
+    ),
+  ];
+
+  test('四列表格可更新同名品类的类别和单份重量', () {
     final imported = importCatalogTsv(
       '$catalogTsvHeader\r\n'
-      '咖啡豆\t豆子\t30\t100\t10\t1\r\n'
-      '糖浆\t果糖、糖水\t0\t50\t1\t2\r\n',
+      '开封夹称重\taa大福\t新别名\t80\r\n'
+      '份盒称重\tbb大福\t奶油、芝麻\t120\r\n',
     );
     final merged = mergeCatalog(existing, imported);
     expect(merged.length, 2);
-    expect(merged.first.calculate(130), '10.0');
-    expect(merged.last.aliases, ['果糖', '糖水']);
+    expect(merged.first.type, WeighingType.openedClip);
+    expect(merged.first.calculate(60), '0.5');
+    expect(merged.last.aliases, ['奶油', '芝麻']);
     expect(importCatalogTsv(exportCatalogTsv(merged)).length, 2);
   });
 
-  test('批量导入拒绝与现有品类冲突的别名', () {
-    const existing = [
-      Category(
-        name: '咖啡豆',
-        aliases: ['豆子'],
-        tareGrams: 0,
-        referenceGrams: 100,
-        referenceQuantity: 1,
-        decimals: 0,
-      ),
-    ];
-    final imported = importCatalogTsv('$catalogTsvHeader\n糖浆\t豆子\t0\t50\t1\t0');
-    expect(() => mergeCatalog(existing, imported), throwsFormatException);
+  test('拒绝未知类别、无效重量和跨品类别名冲突', () {
+    expect(
+      () => importCatalogTsv('$catalogTsvHeader\n未知\taa大福\t\t80'),
+      throwsFormatException,
+    );
+    expect(
+      () => importCatalogTsv('$catalogTsvHeader\n份盒称重\taa大福\t\t0'),
+      throwsFormatException,
+    );
+    final conflicting = importCatalogTsv(
+      '$catalogTsvHeader\n开封夹称重\tbb大福\t旧别名\t80',
+    );
+    expect(() => mergeCatalog(existing, conflicting), throwsFormatException);
   });
 }

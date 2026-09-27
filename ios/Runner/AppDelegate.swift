@@ -2,7 +2,7 @@ import Flutter
 import UIKit
 
 enum CatalogStorage {
-  static let key = "catalog.v1"
+  static let key = "catalog.v2"
 
   static func load() throws -> String {
     if let stored = UserDefaults.standard.object(forKey: key) {
