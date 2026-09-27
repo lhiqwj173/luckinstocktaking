@@ -173,7 +173,7 @@ class _HomePageState extends State<HomePage> {
             controller: controller,
             maxLines: 10,
             decoration: const InputDecoration(
-              hintText: '从 Excel 复制 4 列，包含首行表头，再粘贴到这里',
+              hintText: '从 Excel 复制 5 列，包含首行表头，再粘贴到这里',
               border: OutlineInputBorder(),
             ),
           ),
@@ -314,7 +314,7 @@ class _HomePageState extends State<HomePage> {
                       dense: true,
                       title: Text(category.name),
                       subtitle: Text(
-                        '${category.type.label} · 单份 ${category.singleServingGrams} 克'
+                        '${category.type.label} · 皮重 ${category.tareGrams} 克 · 单份 ${category.singleServingGrams} 克'
                         '${category.aliases.isEmpty ? '' : ' · 别名：${category.aliases.join('、')}'}',
                       ),
                       selected: identical(_selected, category),
@@ -391,7 +391,7 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
                 const Text(
-                  '品类较多时，复制表格到 Excel 修改，再复制包含表头的 4 列批量导入。同名品类会更新，其余品类保留。',
+                  '品类较多时，复制表格到 Excel 修改，再复制包含表头的 5 列批量导入。“其他”填写皮重，固定类别的皮重留空。同名品类会更新，其余品类保留。',
                 ),
                 if (_categories.isEmpty) const Text('暂无品类。点击右侧加号录入。'),
                 ..._categories.map(
@@ -399,7 +399,7 @@ class _HomePageState extends State<HomePage> {
                     child: ListTile(
                       title: Text(category.name),
                       subtitle: Text(
-                        '${category.type.label} · (称重 − ${category.type.tareGrams} 克) ÷ ${category.singleServingGrams} 克 · 结果 0～1 份',
+                        '${category.type.label} · (称重 − ${category.tareGrams} 克) ÷ ${category.singleServingGrams} 克 · 结果 0～1 份',
                       ),
                       trailing: PopupMenuButton<String>(
                         onSelected: (value) => value == 'edit'
@@ -432,7 +432,7 @@ class CategoryDialog extends StatefulWidget {
 
 class _CategoryDialogState extends State<CategoryDialog> {
   final _form = GlobalKey<FormState>();
-  late final TextEditingController name, aliases, grams;
+  late final TextEditingController name, aliases, grams, tare;
   late WeighingType type;
 
   @override
@@ -442,29 +442,37 @@ class _CategoryDialogState extends State<CategoryDialog> {
     name = TextEditingController(text: c?.name ?? '');
     aliases = TextEditingController(text: c?.aliases.join('、') ?? '');
     grams = TextEditingController(text: c?.singleServingGrams.toString() ?? '');
+    tare = TextEditingController(text: c?.customTareGrams?.toString() ?? '');
     type = c?.type ?? WeighingType.portionBox;
   }
 
   @override
   void dispose() {
-    for (final c in [name, aliases, grams]) {
+    for (final c in [name, aliases, grams, tare]) {
       c.dispose();
     }
     super.dispose();
   }
 
-  Widget _number(String label, TextEditingController controller) =>
-      TextFormField(
-        controller: controller,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: InputDecoration(labelText: label),
-        validator: (value) {
-          final number = double.tryParse((value ?? '').trim());
-          return number != null && number.isFinite && number > 0
-              ? null
-              : '请输入大于 0 的有效数值';
-        },
-      );
+  Widget _number(
+    String label,
+    TextEditingController controller, {
+    bool allowZero = false,
+  }) => TextFormField(
+    controller: controller,
+    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+    decoration: InputDecoration(labelText: label),
+    validator: (value) {
+      final number = double.tryParse((value ?? '').trim());
+      return number != null &&
+              number.isFinite &&
+              (allowZero ? number >= 0 : number > 0)
+          ? null
+          : allowZero
+          ? '请输入不小于 0 的有效数值'
+          : '请输入大于 0 的有效数值';
+    },
+  );
 
   void _save() {
     if (!_form.currentState!.validate()) return;
@@ -477,6 +485,9 @@ class _CategoryDialogState extends State<CategoryDialog> {
           .toList(),
       type: type,
       singleServingGrams: double.parse(grams.text.trim()),
+      customTareGrams: type == WeighingType.other
+          ? double.parse(tare.text.trim())
+          : null,
     );
     category.validate();
     Navigator.pop(context, category);
@@ -517,8 +528,12 @@ class _CategoryDialogState extends State<CategoryDialog> {
                 onChanged: (value) => setState(() => type = value!),
               ),
               _number('单份原料重量（克）', grams),
+              if (type == WeighingType.other)
+                _number('皮重（克）', tare, allowZero: true),
               const SizedBox(height: 8),
-              Text('计算：(称重 − ${type.tareGrams} 克) ÷ 单份重量；结果限 0～1 份，保留 1 位小数'),
+              Text(
+                '计算：(称重 − ${type == WeighingType.other ? '自定义皮重' : '${type.tareGrams} 克'}) ÷ 单份重量；结果限 0～1 份，保留 1 位小数',
+              ),
             ],
           ),
         ),

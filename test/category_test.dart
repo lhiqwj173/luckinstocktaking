@@ -14,6 +14,13 @@ void main() {
     type: WeighingType.openedClip,
     singleServingGrams: 80,
   );
+  const other = Category(
+    name: 'cc大福',
+    aliases: ['抹茶大福'],
+    type: WeighingType.other,
+    singleServingGrams: 100,
+    customTareGrams: 35,
+  );
 
   test('两种容器重均计算 0～1 份，结果保留一位小数', () {
     expect(box.calculate(250), '0.0');
@@ -22,6 +29,55 @@ void main() {
     expect(clip.calculate(20), '0.0');
     expect(clip.calculate(60), '0.5');
     expect(clip.calculate(100), '1.0');
+  });
+
+  test('其他类别使用自定义皮重，允许 0 克皮重', () {
+    expect(other.calculate(35), '0.0');
+    expect(other.calculate(85), '0.5');
+    expect(other.calculate(135), '1.0');
+    expect(() => other.calculate(135.01), throwsFormatException);
+    expect(
+      const Category(
+        name: '零皮重',
+        aliases: [],
+        type: WeighingType.other,
+        singleServingGrams: 40,
+        customTareGrams: 0,
+      ).calculate(20),
+      '0.5',
+    );
+  });
+
+  test('自定义皮重仅适用于其他类别且必须有限、非负', () {
+    for (final tare in <double?>[null, -1, double.nan, double.infinity]) {
+      expect(
+        () => Category(
+          name: '错误',
+          aliases: [],
+          type: WeighingType.other,
+          singleServingGrams: 100,
+          customTareGrams: tare,
+        ).validate(),
+        throwsFormatException,
+      );
+    }
+    expect(
+      () => const Category(
+        name: '错误',
+        aliases: [],
+        type: WeighingType.portionBox,
+        singleServingGrams: 100,
+        customTareGrams: 250,
+      ).validate(),
+      throwsFormatException,
+    );
+  });
+
+  test('JSON 往返保留其他类别皮重，固定类别旧数据仍可读取', () {
+    final restored = Category.fromJson(other.toJson());
+    expect(restored.customTareGrams, 35);
+    expect(restored.calculate(85), '0.5');
+    expect(Category.fromJson(box.toJson()).calculate(300), '0.5');
   });
 
   test('原始结果超出 0～1 即报错，不先四舍五入或截断', () {

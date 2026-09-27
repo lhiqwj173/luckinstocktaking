@@ -25,16 +25,19 @@ private struct IntentCategory: Decodable {
   enum WeighingType: String, Decodable {
     case portionBox
     case openedClip
+    case other
     var label: String {
       switch self {
       case .portionBox: return "份盒称重"
       case .openedClip: return "开封夹称重"
+      case .other: return "其他"
       }
     }
-    var tareGrams: Double {
+    var fixedTareGrams: Double? {
       switch self {
       case .portionBox: return 250
       case .openedClip: return 20
+      case .other: return nil
       }
     }
   }
@@ -43,11 +46,23 @@ private struct IntentCategory: Decodable {
   let aliases: [String]
   let type: WeighingType
   let singleServingGrams: Double
+  let customTareGrams: Double?
 
   func validate() throws {
     guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           aliases.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
           singleServingGrams.isFinite, singleServingGrams > 0 else {
+      throw StocktakingError.invalidCatalog
+    }
+    if type == .other {
+      guard let tare = customTareGrams, tare.isFinite, tare >= 0 else {
+        throw StocktakingError.invalidCatalog
+      }
+    } else if customTareGrams != nil {
+      throw StocktakingError.invalidCatalog
+    }
+    guard let tare = type.fixedTareGrams ?? customTareGrams,
+          (tare + singleServingGrams).isFinite else {
       throw StocktakingError.invalidCatalog
     }
   }
@@ -57,7 +72,9 @@ private struct IntentCategory: Decodable {
     guard weight.isFinite, weight >= 0 else {
       throw StocktakingError.invalidNumber
     }
-    let tare = type.tareGrams
+    guard let tare = type.fixedTareGrams ?? customTareGrams else {
+      throw StocktakingError.invalidCatalog
+    }
     let net = weight - tare
     guard net >= 0, net <= singleServingGrams else {
       throw StocktakingError.invalidWeight("\(tare)～\(tare + singleServingGrams)")
