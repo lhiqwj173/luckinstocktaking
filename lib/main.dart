@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import 'category.dart';
 import 'catalog_store.dart';
+import 'catalog_tsv.dart';
 
 void main() => runApp(const StocktakingApp());
 
@@ -139,6 +140,98 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _copyTable() async {
+    try {
+      final table = exportCatalogTsv(_categories);
+      await Clipboard.setData(ClipboardData(text: table));
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已复制品类表格，可粘贴到 Excel 修改')));
+      }
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _error = error.message ?? error.code);
+    }
+  }
+
+  Future<void> _importTable() async {
+    final controller = TextEditingController();
+    final table = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('批量导入或更新品类'),
+        content: SizedBox(
+          width: 520,
+          child: TextField(
+            controller: controller,
+            maxLines: 10,
+            decoration: const InputDecoration(
+              hintText: '从 Excel 复制 6 列，包含首行表头，再粘贴到这里',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('预览导入'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (table == null || !mounted) return;
+    try {
+      final imported = importCatalogTsv(table);
+      final merged = mergeCatalog(_categories, imported);
+      final oldNames = _categories
+          .map((item) => normalizeName(item.name))
+          .toSet();
+      final additions = imported
+          .where((item) => !oldNames.contains(normalizeName(item.name)))
+          .length;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('确认导入'),
+          content: Text(
+            '将新增 $additions 个品类，更新 ${imported.length - additions} 个同名品类。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      await _store.save(merged);
+      if (mounted) {
+        setState(() {
+          _categories = merged;
+          _selected = null;
+          _result = null;
+          _error = null;
+        });
+      }
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _error = error.message ?? error.code);
+    }
+  }
+
   void _calculate() {
     final category = _selected;
     if (category == null) {
@@ -185,8 +278,7 @@ class _HomePageState extends State<HomePage> {
                       child: SelectableText(
                         '安装诊断：版本 ${_diagnostics!.version}\n'
                         '主 App：${_diagnostics!.appBundleId}\n'
-                        '键盘：${_diagnostics!.keyboardBundleId}（${_diagnostics!.keyboardEmbedded ? '已打包' : '缺失'}）\n'
-                        '共享数据权限：${_diagnostics!.appGroupAvailable ? '可用' : '不可用'}',
+                        '品类数据：本机保存；快捷指令直接调用主 App 计算',
                       ),
                     ),
                   ),
@@ -267,12 +359,23 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     IconButton(
+                      onPressed: _copyTable,
+                      icon: const Icon(Icons.content_copy),
+                      tooltip: '复制品类表格到 Excel',
+                    ),
+                    IconButton(
+                      onPressed: _importTable,
+                      icon: const Icon(Icons.table_rows),
+                      tooltip: '从 Excel 粘贴批量导入',
+                    ),
+                    IconButton(
                       onPressed: () => _edit(),
                       icon: const Icon(Icons.add),
                       tooltip: '新增品类',
                     ),
                   ],
                 ),
+                const Text('品类较多时，点“复制”将表格粘贴到 Excel 修改，再复制包含表头的 6 列，点“表格”批量导入。同名品类会更新，其余品类保留。'),
                 if (_categories.isEmpty) const Text('暂无品类。点击右侧加号录入。'),
                 ..._categories.map(
                   (category) => Card(
@@ -295,7 +398,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const SizedBox(height: 20),
                 const Text(
-                  '跨 App 使用：设置 → 通用 → 键盘 → 键盘 → 添加新键盘，选择“称重盘点键盘”。在其他 App 的普通文本框中先输入品类名，再切换到此键盘；按匹配排序选品类、输入克数、计算结果。iOS 不支持跨 App 常驻悬浮；密码框及部分 App 不支持第三方键盘。',
+                  '跨 App 使用：在“快捷指令”中添加“称重盘点计算”动作，将“品类名称或别名”和“称重（克）”都设为“每次询问”，再添加“显示结果”和“拷贝至剪贴板”。可在“设置 → 辅助功能 → 触控 → 轻点背面”中指定该快捷指令。品类和规则在本 App 修改后立即供快捷指令使用。',
                 ),
               ],
             ),
