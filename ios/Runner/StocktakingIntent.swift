@@ -99,15 +99,3 @@ struct CalculateStockIntent: AppIntent {
     value.lowercased().filter { !$0.isWhitespace }
   }
 }
-
-@available(iOS 16.0, *)
-struct StocktakingShortcuts: AppShortcutsProvider {
-  static var appShortcuts: [AppShortcut] {
-    AppShortcut(
-      intent: CalculateStockIntent(),
-      phrases: ["用\(\.applicationName)称重盘点"],
-      shortTitle: "称重盘点",
-      systemImageName: "scalemass"
-    )
-  }
-}
