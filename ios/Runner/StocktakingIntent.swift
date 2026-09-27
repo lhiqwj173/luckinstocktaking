@@ -80,7 +80,7 @@ private struct IntentCategory: Decodable {
       throw StocktakingError.invalidWeight("\(tare)～\(tare + singleServingGrams)")
     }
     let tenths = Int((net / singleServingGrams * 10 + 0.5).rounded(.down))
-    return "\(name)（\(type.label)）：\(tenths / 10).\(tenths % 10) 份"
+    return "\(name)：\(tenths / 10).\(tenths % 10) 份"
   }
 }
 
@@ -102,21 +102,24 @@ private enum IntentCatalog {
 }
 
 @available(iOS 16.0, *)
-struct FindStockCategoryIntent: AppIntent {
-  static var title: LocalizedStringResource { "匹配称重品类" }
-  static var description = IntentDescription("按名称或别名模糊查找品类，有多个候选时选择一个。")
+struct CalculateStockIntent: AppIntent {
+  static var title: LocalizedStringResource { "称重盘点计算" }
+  static var description = IntentDescription("输入品类名称和称重，自动匹配品类并计算结果。")
   static var openAppWhenRun: Bool { false }
 
   @Parameter(title: "品类名称或别名")
-  var query: String
+  var categoryName: String
+
+  @Parameter(title: "称重（克）")
+  var weightGrams: Double?
 
   static var parameterSummary: some ParameterSummary {
-    Summary("匹配 \(\.$query)")
+    Summary("计算 \(\.$categoryName) 的称重")
   }
 
   func perform() async throws -> some IntentResult & ReturnsValue<String> {
     let categories = try IntentCatalog.load()
-    let key = IntentCatalog.normalize(query)
+    let key = IntentCatalog.normalize(categoryName)
     guard !key.isEmpty else { throw StocktakingError.noMatch }
     let matches = categories.compactMap { category -> (score: Int, category: IntentCategory)? in
       let names = [category.name] + category.aliases
@@ -134,40 +137,25 @@ struct FindStockCategoryIntent: AppIntent {
     }
     guard let first = matches.first else { throw StocktakingError.noMatch }
     let best = matches.filter { $0.score == first.score }.map(\.category)
-    if best.count == 1 { return .result(value: best[0].name) }
-    let selected = try await $query.requestDisambiguation(
-      among: best.map(\.name),
-      dialog: "找到多个品类，请选择准确的一项"
-    )
-    guard best.contains(where: { $0.name == selected }) else {
-      throw StocktakingError.noMatch
+    let chosen: IntentCategory
+    if best.count == 1 {
+      chosen = best[0]
+    } else {
+      let selected = try await $categoryName.requestDisambiguation(
+        among: best.map(\.name),
+        dialog: "找到多个品类，请选择准确的一项"
+      )
+      guard let category = best.first(where: { $0.name == selected }) else {
+        throw StocktakingError.noMatch
+      }
+      chosen = category
     }
-    return .result(value: selected)
-  }
-}
-
-@available(iOS 16.0, *)
-struct CalculateStockIntent: AppIntent {
-  static var title: LocalizedStringResource { "称重盘点计算" }
-  static var description = IntentDescription("根据已匹配的品类和称重计算 0～1 份。")
-  static var openAppWhenRun: Bool { false }
-
-  @Parameter(title: "已匹配的品类")
-  var categoryName: String
-
-  @Parameter(title: "称重（克）")
-  var weightGrams: Double
-
-  static var parameterSummary: some ParameterSummary {
-    Summary("计算 \(\.$categoryName) 的 \(\.$weightGrams) 克称重")
-  }
-
-  func perform() async throws -> some IntentResult & ReturnsValue<String> {
-    let categories = try IntentCatalog.load()
-    let key = IntentCatalog.normalize(categoryName)
-    guard let chosen = categories.first(where: { IntentCatalog.normalize($0.name) == key }) else {
-      throw StocktakingError.noMatch
+    let weight: Double
+    if let provided = weightGrams {
+      weight = provided
+    } else {
+      weight = try await $weightGrams.requestValue("请输入称重（克）")
     }
-    return .result(value: try chosen.calculate(weight: weightGrams))
+    return .result(value: try chosen.calculate(weight: weight))
   }
 }
