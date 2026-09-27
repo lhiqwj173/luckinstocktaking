@@ -76,8 +76,11 @@ class Category {
         '称重超出 ${type.label} 的合理范围（$tareGrams～${tareGrams + singleServingGrams} 克），请检查输入重量',
       );
     }
-    final tenths = (netGrams / singleServingGrams * 10 + 0.5).floor();
-    return '${tenths ~/ 10}.${tenths % 10}';
+    final tenths = (netGrams / singleServingGrams * 10 + 0.5).floor().clamp(
+      1,
+      9,
+    );
+    return '0.$tenths';
   }
 }
 

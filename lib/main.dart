@@ -399,7 +399,7 @@ class _HomePageState extends State<HomePage> {
                     child: ListTile(
                       title: Text(category.name),
                       subtitle: Text(
-                        '${category.type.label} · (称重 − ${category.tareGrams} 克) ÷ ${category.singleServingGrams} 克 · 结果 0～1 份',
+                        '${category.type.label} · (称重 − ${category.tareGrams} 克) ÷ ${category.singleServingGrams} 克 · 结果 0.1～0.9 份',
                       ),
                       trailing: PopupMenuButton<String>(
                         onSelected: (value) => value == 'edit'
@@ -415,7 +415,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const SizedBox(height: 20),
                 const Text(
-                  '跨 App 使用：在“快捷指令”中添加“称重盘点计算”，将“品类名称或别名”和“称重（克）”都设为“每次询问”；再添加“显示结果”。运行时输入品类名称和称重。匹配多个品类时先选择，匹配不到会直接停止。可在“设置 → 辅助功能 → 触控 → 轻点背面”中指定该快捷指令。',
+                  '跨 App 使用：在“快捷指令”中添加“称重盘点计算”，将“品类名称或别名”和“称重（克）”均留空，再添加“显示结果”。运行时先输入品类名称或别名；匹配多个品类时先选择，再输入称重。匹配不到会直接停止。有效称重的结果限为 0.1～0.9 份。可在“设置 → 辅助功能 → 触控 → 轻点背面”中指定该快捷指令。',
                 ),
               ],
             ),
@@ -532,7 +532,7 @@ class _CategoryDialogState extends State<CategoryDialog> {
                 _number('皮重（克）', tare, allowZero: true),
               const SizedBox(height: 8),
               Text(
-                '计算：(称重 − ${type == WeighingType.other ? '自定义皮重' : '${type.tareGrams} 克'}) ÷ 单份重量；结果限 0～1 份，保留 1 位小数',
+                '计算：(称重 − ${type == WeighingType.other ? '自定义皮重' : '${type.tareGrams} 克'}) ÷ 单份重量；有效称重的结果限为 0.1～0.9 份，保留 1 位小数',
               ),
             ],
           ),

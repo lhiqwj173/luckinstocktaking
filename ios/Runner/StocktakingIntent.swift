@@ -79,8 +79,9 @@ private struct IntentCategory: Decodable {
     guard net >= 0, net <= singleServingGrams else {
       throw StocktakingError.invalidWeight("\(tare)～\(tare + singleServingGrams)")
     }
-    let tenths = Int((net / singleServingGrams * 10 + 0.5).rounded(.down))
-    return "\(name)：\(tenths / 10).\(tenths % 10) 份"
+    let roundedTenths = Int((net / singleServingGrams * 10 + 0.5).rounded(.down))
+    let tenths = min(9, max(1, roundedTenths))
+    return "\(name)：0.\(tenths) 份"
   }
 }
 
@@ -104,11 +105,11 @@ private enum IntentCatalog {
 @available(iOS 16.0, *)
 struct CalculateStockIntent: AppIntent {
   static var title: LocalizedStringResource { "称重盘点计算" }
-  static var description = IntentDescription("输入品类名称和称重，自动匹配品类并计算结果。")
+  static var description = IntentDescription("先按名称或别名查找并确认品类，再输入称重计算结果。")
   static var openAppWhenRun: Bool { false }
 
   @Parameter(title: "品类名称或别名")
-  var categoryName: String
+  var categoryName: String?
 
   @Parameter(title: "称重（克）")
   var weightGrams: Double?
@@ -119,7 +120,13 @@ struct CalculateStockIntent: AppIntent {
 
   func perform() async throws -> some IntentResult & ReturnsValue<String> {
     let categories = try IntentCatalog.load()
-    let key = IntentCatalog.normalize(categoryName)
+    let query: String
+    if let provided = categoryName {
+      query = provided
+    } else {
+      query = try await $categoryName.requestValue("请输入品类名称或别名")
+    }
+    let key = IntentCatalog.normalize(query)
     guard !key.isEmpty else { throw StocktakingError.noMatch }
     let matches = categories.compactMap { category -> (score: Int, category: IntentCategory)? in
       let names = [category.name] + category.aliases

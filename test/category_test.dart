@@ -22,19 +22,21 @@ void main() {
     customTareGrams: 35,
   );
 
-  test('两种容器重均计算 0～1 份，结果保留一位小数', () {
-    expect(box.calculate(250), '0.0');
+  test('两种容器重均计算 0.1～0.9 份，结果保留一位小数', () {
+    expect(box.calculate(250), '0.1');
+    expect(box.calculate(254), '0.1');
     expect(box.calculate(275), '0.3');
-    expect(box.calculate(350), '1.0');
-    expect(clip.calculate(20), '0.0');
+    expect(box.calculate(345), '0.9');
+    expect(box.calculate(350), '0.9');
+    expect(clip.calculate(20), '0.1');
     expect(clip.calculate(60), '0.5');
-    expect(clip.calculate(100), '1.0');
+    expect(clip.calculate(100), '0.9');
   });
 
   test('其他类别使用自定义皮重，允许 0 克皮重', () {
-    expect(other.calculate(35), '0.0');
+    expect(other.calculate(35), '0.1');
     expect(other.calculate(85), '0.5');
-    expect(other.calculate(135), '1.0');
+    expect(other.calculate(135), '0.9');
     expect(() => other.calculate(135.01), throwsFormatException);
     expect(
       const Category(
@@ -80,7 +82,7 @@ void main() {
     expect(Category.fromJson(box.toJson()).calculate(300), '0.5');
   });
 
-  test('原始结果超出 0～1 即报错，不先四舍五入或截断', () {
+  test('原始称重超出皮重至一份重量范围仍报错', () {
     for (final weight in [249.99, 350.01, double.nan, double.infinity]) {
       expect(() => box.calculate(weight), throwsFormatException);
     }
