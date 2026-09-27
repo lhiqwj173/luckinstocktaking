@@ -1,5 +1,6 @@
 import AppIntents
 import Foundation
+import UIKit
 
 @available(iOS 16.0, *)
 private enum StocktakingError: LocalizedError {
@@ -105,7 +106,7 @@ private enum IntentCatalog {
 @available(iOS 16.0, *)
 struct CalculateStockIntent: AppIntent {
   static var title: LocalizedStringResource { "称重盘点计算" }
-  static var description = IntentDescription("先按名称或别名查找并确认品类，再输入称重计算结果。")
+  static var description = IntentDescription("先按名称或别名确认品类，再输入称重；计算成功后复制品类名称。")
   static var openAppWhenRun: Bool { false }
 
   @Parameter(title: "品类名称或别名")
@@ -163,6 +164,11 @@ struct CalculateStockIntent: AppIntent {
     } else {
       weight = try await $weightGrams.requestValue("请输入称重（克）")
     }
-    return .result(value: try chosen.calculate(weight: weight))
+    let result = try chosen.calculate(weight: weight)
+    let name = chosen.name
+    await MainActor.run {
+      UIPasteboard.general.string = name
+    }
+    return .result(value: result)
   }
 }
