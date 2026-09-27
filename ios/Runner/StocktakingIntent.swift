@@ -114,7 +114,7 @@ struct CalculateStockIntent: AppIntent {
   var weightGrams: Double?
 
   static var parameterSummary: some ParameterSummary {
-    Summary("计算 \(\.$categoryName) 的称重")
+    Summary("计算 \(\.$categoryName) 的称重 \(\.$weightGrams) 克")
   }
 
   func perform() async throws -> some IntentResult & ReturnsValue<String> {
