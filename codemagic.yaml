@@ -24,6 +24,9 @@ workflows:
           package_dir="$(mktemp -d)"
           trap 'rm -rf "$package_dir"' EXIT
           test -d "$app_path/PlugIns/StockKeyboard.appex"
+          test -x "$app_path/PlugIns/StockKeyboard.appex/StockKeyboard"
+          extension_point="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$app_path/PlugIns/StockKeyboard.appex/Info.plist")"
+          test "$extension_point" = 'com.apple.keyboard-service'
           mkdir -p "$package_dir/Payload"
           cp -R "$app_path" "$package_dir/Payload/Runner.app"
           mkdir -p "$(dirname "$ipa_path")"

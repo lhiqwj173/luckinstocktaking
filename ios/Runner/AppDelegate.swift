@@ -13,6 +13,16 @@ import UIKit
       binaryMessenger: engineBridge.applicationRegistrar.messenger()
     )
     channel.setMethodCallHandler { [weak self] call, result in
+      let keyboardBundle = Bundle.main.bundleURL
+        .appendingPathComponent("PlugIns/StockKeyboard.appex", isDirectory: true)
+      guard FileManager.default.fileExists(atPath: keyboardBundle.path) else {
+        result(FlutterError(
+          code: "KEYBOARD_NOT_EMBEDDED",
+          message: "安装包未包含称重盘点键盘扩展；重新签名时须保留并签名 PlugIns/StockKeyboard.appex",
+          details: nil
+        ))
+        return
+      }
       guard let self, let defaults = UserDefaults(suiteName: self.group) else {
         result(FlutterError(code: "APP_GROUP", message: "无法打开共享数据容器，请检查 App Groups 签名配置", details: nil))
         return
