@@ -80,6 +80,27 @@ void main() {
     expect(restored.customTareGrams, 35);
     expect(restored.calculate(85), '0.5');
     expect(Category.fromJson(box.toJson()).calculate(300), '0.5');
+    final legacy = box.toJson()..remove('allowMultiple');
+    expect(Category.fromJson(legacy).allowMultiple, isFalse);
+    expect(
+      () => Category.fromJson({...box.toJson(), 'allowMultiple': null}),
+      throwsA(isA<TypeError>()),
+    );
+  });
+
+  test('允许多份时不限制 0.9 份上限，低于 0.1 份时仍显示 0.1', () {
+    const multiple = Category(
+      name: '多份大福',
+      aliases: [],
+      type: WeighingType.portionBox,
+      singleServingGrams: 100,
+      allowMultiple: true,
+    );
+    expect(multiple.calculate(250), '0.1');
+    expect(multiple.calculate(350), '1.0');
+    expect(multiple.calculate(495), '2.5');
+    expect(() => multiple.calculate(249.99), throwsFormatException);
+    expect(Category.fromJson(multiple.toJson()).allowMultiple, isTrue);
   });
 
   test('原始称重超出皮重至一份重量范围仍报错', () {
@@ -114,5 +135,36 @@ void main() {
       ]),
       throwsFormatException,
     );
+  });
+
+  test('克隆复制称重规则和多份设置，生成不冲突的名称且不复制别名', () {
+    const source = Category(
+      name: '红豆大福',
+      aliases: ['红豆'],
+      type: WeighingType.other,
+      singleServingGrams: 90,
+      customTareGrams: 35,
+      allowMultiple: true,
+    );
+    final first = cloneCategory([source], source);
+    expect(first.name, '红豆大福（副本）');
+    expect(first.aliases, isEmpty);
+    expect(first.type, source.type);
+    expect(first.singleServingGrams, source.singleServingGrams);
+    expect(first.customTareGrams, source.customTareGrams);
+    expect(first.allowMultiple, isTrue);
+    final second = cloneCategory([source, first], first);
+    expect(second.name, '红豆大福（副本2）');
+    final withAliasConflict = cloneCategory([
+      source,
+      const Category(
+        name: '其他品类',
+        aliases: ['红豆大福（副本）'],
+        type: WeighingType.portionBox,
+        singleServingGrams: 100,
+      ),
+    ], source);
+    expect(withAliasConflict.name, '红豆大福（副本2）');
+    expect(() => validateCatalog([source, first, second]), returnsNormally);
   });
 }

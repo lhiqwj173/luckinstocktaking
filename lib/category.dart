@@ -19,12 +19,14 @@ class Category {
     required this.type,
     required this.singleServingGrams,
     this.customTareGrams,
+    this.allowMultiple = false,
   });
   final String name;
   final List<String> aliases;
   final WeighingType type;
   final double singleServingGrams;
   final double? customTareGrams;
+  final bool allowMultiple;
   double get tareGrams =>
       type == WeighingType.other ? customTareGrams! : type.tareGrams!;
 
@@ -34,6 +36,9 @@ class Category {
     type: WeighingType.fromKey(json['type'] as String),
     singleServingGrams: (json['singleServingGrams'] as num).toDouble(),
     customTareGrams: (json['customTareGrams'] as num?)?.toDouble(),
+    allowMultiple: json.containsKey('allowMultiple')
+        ? json['allowMultiple'] as bool
+        : false,
   )..validate();
 
   Map<String, dynamic> toJson() => {
@@ -42,6 +47,7 @@ class Category {
     'type': type.name,
     'singleServingGrams': singleServingGrams,
     if (customTareGrams != null) 'customTareGrams': customTareGrams,
+    'allowMultiple': allowMultiple,
   };
 
   void validate() {
@@ -71,17 +77,43 @@ class Category {
       throw const FormatException('请输入有效的称重（克）');
     }
     final netGrams = weightGrams - tareGrams;
-    if (netGrams < 0 || netGrams > singleServingGrams) {
+    if (netGrams < 0 || (!allowMultiple && netGrams > singleServingGrams)) {
       throw FormatException(
-        '称重超出 ${type.label} 的合理范围（$tareGrams～${tareGrams + singleServingGrams} 克），请检查输入重量',
+        '称重超出 ${type.label} 的合理范围（${allowMultiple ? '$tareGrams 克以上' : '$tareGrams～${tareGrams + singleServingGrams} 克'}），请检查输入重量',
       );
     }
-    final tenths = (netGrams / singleServingGrams * 10 + 0.5).floor().clamp(
-      1,
-      9,
-    );
-    return '0.$tenths';
+    final scaled = netGrams / singleServingGrams * 10 + 0.5;
+    if (!scaled.isFinite) throw const FormatException('称重与单份重量的比值超出有效范围');
+    final roundedTenths = scaled.floor();
+    final tenths = allowMultiple
+        ? (roundedTenths < 1 ? 1 : roundedTenths)
+        : roundedTenths.clamp(1, 9);
+    return '${tenths ~/ 10}.${tenths % 10}';
   }
+}
+
+Category cloneCategory(List<Category> categories, Category source) {
+  validateCatalog(categories);
+  if (!categories.contains(source)) throw ArgumentError('待克隆的品类不在当前列表中');
+  final occupied = categories
+      .expand((category) => [category.name, ...category.aliases])
+      .map(normalizeName)
+      .toSet();
+  final baseName = source.name.replaceFirst(RegExp(r'（副本\d*）$'), '');
+  var number = 1;
+  late String name;
+  do {
+    name = '$baseName（副本${number == 1 ? '' : number}）';
+    number++;
+  } while (occupied.contains(normalizeName(name)));
+  return Category(
+    name: name,
+    aliases: const [],
+    type: source.type,
+    singleServingGrams: source.singleServingGrams,
+    customTareGrams: source.customTareGrams,
+    allowMultiple: source.allowMultiple,
+  );
 }
 
 String normalizeName(String value) =>

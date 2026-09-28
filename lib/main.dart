@@ -112,6 +112,27 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _clone(Category source) async {
+    try {
+      final clone = cloneCategory(_categories, source);
+      final updated = [..._categories, clone];
+      await _store.save(updated);
+      if (mounted) {
+        setState(() {
+          _categories = updated;
+          _error = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已克隆为 ${clone.name}；别名未复制以避免重复')),
+        );
+      }
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _error = error.message ?? error.code);
+    }
+  }
+
   Future<void> _delete(Category category) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -391,7 +412,7 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
                 const Text(
-                  '品类较多时，复制表格到 Excel 修改，再复制包含表头的 5 列批量导入。“其他”填写皮重，固定类别的皮重留空。同名品类会更新，其余品类保留。',
+                  '品类较多时，复制表格到 Excel 修改，再复制包含表头的 6 列批量导入；旧 5 列表格仍可导入，默认不允许多份。“其他”填写皮重，固定类别的皮重留空。同名品类会更新，其余品类保留。',
                 ),
                 if (_categories.isEmpty) const Text('暂无品类。点击右侧加号录入。'),
                 ..._categories.map(
@@ -399,14 +420,22 @@ class _HomePageState extends State<HomePage> {
                     child: ListTile(
                       title: Text(category.name),
                       subtitle: Text(
-                        '${category.type.label} · (称重 − ${category.tareGrams} 克) ÷ ${category.singleServingGrams} 克 · 结果 0.1～0.9 份',
+                        '${category.type.label} · (称重 − ${category.tareGrams} 克) ÷ ${category.singleServingGrams} 克 · ${category.allowMultiple ? '允许多份，结果 ≥0.1 份' : '结果 0.1～0.9 份'}',
                       ),
                       trailing: PopupMenuButton<String>(
-                        onSelected: (value) => value == 'edit'
-                            ? _edit(category)
-                            : _delete(category),
+                        onSelected: (value) {
+                          switch (value) {
+                            case 'edit':
+                              _edit(category);
+                            case 'clone':
+                              _clone(category);
+                            case 'delete':
+                              _delete(category);
+                          }
+                        },
                         itemBuilder: (_) => const [
                           PopupMenuItem(value: 'edit', child: Text('编辑')),
+                          PopupMenuItem(value: 'clone', child: Text('克隆')),
                           PopupMenuItem(value: 'delete', child: Text('删除')),
                         ],
                       ),
@@ -415,7 +444,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const SizedBox(height: 20),
                 const Text(
-                  '跨 App 使用：在“快捷指令”中添加“称重盘点计算”，将“品类名称或别名”和“称重（克）”均留空，再添加“显示结果”。运行时先输入品类名称或别名；匹配多个品类时先选择，再输入称重。计算成功后，所选品类的正式名称会复制到剪贴板。匹配不到会直接停止。有效称重的结果限为 0.1～0.9 份。可在“设置 → 辅助功能 → 触控 → 轻点背面”中指定该快捷指令。',
+                  '跨 App 使用：在“快捷指令”中依次添加“称重盘点计算”→“替换文本”→“复制到剪贴板”→“显示结果”。计算动作的“品类名称或别名”和“称重（克）”均留空；“替换文本”的输入选计算输出，开启“正则表达式”，查找 \\s*：[^：]*\$，替换内容必须完全为空，不能填空格；“复制到剪贴板”的输入选替换结果；“显示结果”的输入明确选计算输出。运行时先输入品类名称或别名，多个匹配项先选择，再输入称重；最终显示份数并复制正式名称。匹配不到会直接停止；未勾选“允许多份”的品类结果限为 0.1～0.9 份。可在“设置 → 辅助功能 → 触控 → 轻点背面”中指定该快捷指令。',
                 ),
               ],
             ),
@@ -434,6 +463,7 @@ class _CategoryDialogState extends State<CategoryDialog> {
   final _form = GlobalKey<FormState>();
   late final TextEditingController name, aliases, grams, tare;
   late WeighingType type;
+  late bool allowMultiple;
 
   @override
   void initState() {
@@ -444,6 +474,7 @@ class _CategoryDialogState extends State<CategoryDialog> {
     grams = TextEditingController(text: c?.singleServingGrams.toString() ?? '');
     tare = TextEditingController(text: c?.customTareGrams?.toString() ?? '');
     type = c?.type ?? WeighingType.portionBox;
+    allowMultiple = c?.allowMultiple ?? false;
   }
 
   @override
@@ -488,6 +519,7 @@ class _CategoryDialogState extends State<CategoryDialog> {
       customTareGrams: type == WeighingType.other
           ? double.parse(tare.text.trim())
           : null,
+      allowMultiple: allowMultiple,
     );
     category.validate();
     Navigator.pop(context, category);
@@ -530,9 +562,16 @@ class _CategoryDialogState extends State<CategoryDialog> {
               _number('单份原料重量（克）', grams),
               if (type == WeighingType.other)
                 _number('皮重（克）', tare, allowZero: true),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('允许多份'),
+                subtitle: const Text('勾选后结果最小 0.1 份，不设 0.9 份上限'),
+                value: allowMultiple,
+                onChanged: (value) => setState(() => allowMultiple = value!),
+              ),
               const SizedBox(height: 8),
               Text(
-                '计算：(称重 − ${type == WeighingType.other ? '自定义皮重' : '${type.tareGrams} 克'}) ÷ 单份重量；有效称重的结果限为 0.1～0.9 份，保留 1 位小数',
+                '计算：(称重 − ${type == WeighingType.other ? '自定义皮重' : '${type.tareGrams} 克'}) ÷ 单份重量；结果${allowMultiple ? '最小 0.1 份、无 0.9 份上限' : '限为 0.1～0.9 份'}，保留 1 位小数',
               ),
             ],
           ),

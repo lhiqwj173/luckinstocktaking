@@ -1,6 +1,5 @@
 import AppIntents
 import Foundation
-import UIKit
 
 @available(iOS 16.0, *)
 private enum StocktakingError: LocalizedError {
@@ -16,7 +15,7 @@ private enum StocktakingError: LocalizedError {
     case .noMatch: return "没有匹配的品类，请检查名称或别名"
     case .invalidCatalog: return "品类数据无效，请在称重盘点助手中检查"
     case .invalidNumber: return "请输入有效的称重（克）"
-    case .invalidWeight(let range): return "称重超出合理范围（\(range) 克），请检查输入重量"
+    case .invalidWeight(let range): return "称重超出合理范围（\(range)），请检查输入重量"
     }
   }
 }
@@ -48,6 +47,25 @@ private struct IntentCategory: Decodable {
   let type: WeighingType
   let singleServingGrams: Double
   let customTareGrams: Double?
+  let allowMultiple: Bool
+
+  private enum CodingKeys: String, CodingKey {
+    case name, aliases, type, singleServingGrams, customTareGrams, allowMultiple
+  }
+
+  init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    name = try values.decode(String.self, forKey: .name)
+    aliases = try values.decode([String].self, forKey: .aliases)
+    type = try values.decode(WeighingType.self, forKey: .type)
+    singleServingGrams = try values.decode(Double.self, forKey: .singleServingGrams)
+    customTareGrams = try values.decodeIfPresent(Double.self, forKey: .customTareGrams)
+    if values.contains(.allowMultiple) {
+      allowMultiple = try values.decode(Bool.self, forKey: .allowMultiple)
+    } else {
+      allowMultiple = false
+    }
+  }
 
   func validate() throws {
     guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -77,12 +95,18 @@ private struct IntentCategory: Decodable {
       throw StocktakingError.invalidCatalog
     }
     let net = weight - tare
-    guard net >= 0, net <= singleServingGrams else {
-      throw StocktakingError.invalidWeight("\(tare)～\(tare + singleServingGrams)")
+    guard net >= 0, allowMultiple || net <= singleServingGrams else {
+      throw StocktakingError.invalidWeight(
+        allowMultiple ? "\(tare) 克以上" : "\(tare)～\(tare + singleServingGrams) 克"
+      )
     }
-    let roundedTenths = Int((net / singleServingGrams * 10 + 0.5).rounded(.down))
-    let tenths = min(9, max(1, roundedTenths))
-    return "\(name)：0.\(tenths) 份"
+    let scaled = net / singleServingGrams * 10 + 0.5
+    guard scaled.isFinite, scaled < Double(Int.max) else {
+      throw StocktakingError.invalidNumber
+    }
+    let roundedTenths = Int(scaled.rounded(.down))
+    let tenths = allowMultiple ? max(1, roundedTenths) : min(9, max(1, roundedTenths))
+    return "\(name)：\(tenths / 10).\(tenths % 10) 份"
   }
 }
 
@@ -106,7 +130,7 @@ private enum IntentCatalog {
 @available(iOS 16.0, *)
 struct CalculateStockIntent: AppIntent {
   static var title: LocalizedStringResource { "称重盘点计算" }
-  static var description = IntentDescription("先按名称或别名确认品类，再输入称重；计算成功后复制品类名称。")
+  static var description = IntentDescription("先按名称或别名确认品类，再输入称重；返回正式名称和计算结果。")
   static var openAppWhenRun: Bool { false }
 
   @Parameter(title: "品类名称或别名")
@@ -164,11 +188,6 @@ struct CalculateStockIntent: AppIntent {
     } else {
       weight = try await $weightGrams.requestValue("请输入称重（克）")
     }
-    let result = try chosen.calculate(weight: weight)
-    let name = chosen.name
-    await MainActor.run {
-      UIPasteboard.general.string = name
-    }
-    return .result(value: result)
+    return .result(value: try chosen.calculate(weight: weight))
   }
 }
