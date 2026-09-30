@@ -86,7 +86,7 @@ private struct IntentCategory: Decodable {
     }
   }
 
-  func calculate(weight: Double) throws -> String {
+  func calculate(weight: Double, inputName: String) throws -> String {
     try validate()
     guard weight.isFinite, weight >= 0 else {
       throw StocktakingError.invalidNumber
@@ -106,7 +106,7 @@ private struct IntentCategory: Decodable {
     }
     let roundedTenths = Int(scaled.rounded(.down))
     let tenths = allowMultiple ? max(1, roundedTenths) : min(9, max(1, roundedTenths))
-    return "\(name)：\(tenths / 10).\(tenths % 10) 份"
+    return "\(inputName)：\(tenths / 10).\(tenths % 10) 份"
   }
 }
 
@@ -130,7 +130,7 @@ private enum IntentCatalog {
 @available(iOS 16.0, *)
 struct CalculateStockIntent: AppIntent {
   static var title: LocalizedStringResource { "称重盘点计算" }
-  static var description = IntentDescription("先按名称或别名确认品类，再输入称重；返回正式名称和计算结果。")
+  static var description = IntentDescription("先按名称或别名确认品类，再输入称重；返回用户输入的名称和计算结果。")
   static var openAppWhenRun: Bool { false }
 
   @Parameter(title: "品类名称或别名")
@@ -188,6 +188,6 @@ struct CalculateStockIntent: AppIntent {
     } else {
       weight = try await $weightGrams.requestValue("请输入称重（克）")
     }
-    return .result(value: try chosen.calculate(weight: weight))
+    return .result(value: try chosen.calculate(weight: weight, inputName: query))
   }
 }
