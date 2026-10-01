@@ -144,6 +144,50 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(straw.cells[1].contains("2"))
   }
 
+  func testMissingLastInventoryIsRetriedInsideGoodsSectionOnly() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
+    }
+    let cells = [
+      cell("货物规格名称", 20, 0), cell("实盘总库存", 440, 0),
+      cell("竹浆擦手纸", 80, 50), cell("GS00657-07", 80, 80), cell("4包", 500, 65),
+      cell("原色竹浆餐巾纸 QR100张*60包/箱", 80, 145), cell("GS00659-02", 80, 175),
+      cell("－箱丨Ｂ包", 500, 150),
+      cell("预制物料信息", 20, 220), cell("预制物料名称", 20, 260),
+      cell("实盘总库存", 440, 260), cell("2200毫升", 500, 310),
+    ]
+    var calls = 0
+    let rows = try StockTableParser.rows(cells) { start, end in
+      calls += 1
+      XCTAssertEqual(start, 122.5)
+      XCTAssertEqual(end, 220)
+      return [cell("－箱13包", 500, 150)]
+    }
+    XCTAssertEqual(calls, 1)
+    XCTAssertEqual(rows.count, 2)
+    XCTAssertEqual(rows[0].cells[1], "4包")
+    XCTAssertEqual(rows[1].cells[1], "－箱13包")
+    XCTAssertThrowsError(try StockTableParser.rows(cells))
+    XCTAssertThrowsError(try StockTableParser.rows(cells) { _, _ in [cell("2200毫升", 500, 310)] })
+  }
+
+  func testVisionRecognizesLastGoodsBeforePreparedMaterials() throws {
+    let url = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
+      forResource: "recording_inventory_footer", withExtension: "png", subdirectory: "Fixtures"))
+    let image = try XCTUnwrap(UIImage(data: Data(contentsOf: url)))
+    let rows = try StockHistoryProcessor.recognize(image)
+    XCTAssertEqual(rows.count, 2)
+    let tissue = try XCTUnwrap(rows.last)
+    XCTAssertTrue(tissue.cells[0].contains("GS00659-02"))
+    XCTAssertTrue(tissue.cells[1].contains("13"))
+    XCTAssertFalse(tissue.cells[1].contains("2200"))
+    let cg = try XCTUnwrap(image.cgImage)
+    let enlarged = try StockHistoryProcessor.inventoryRow(cg,
+      crop: CGRect(x: 487, y: 205, width: cg.width - 487, height: 145), scale: 2)
+    XCTAssertTrue(enlarged.contains { $0.text.contains("13") })
+    XCTAssertTrue(enlarged.allSatisfy { $0.box.midY >= 205 && $0.box.midY < 350 })
+  }
+
   func testMergedNameAndInventorySplitUsesGeometryRatherThanSpecificationDigits() {
     let text = "型含乳饮料）1L*12盒/箱 12.1盒"
     let quantityStart = text.range(of: "12.1盒")!.lowerBound

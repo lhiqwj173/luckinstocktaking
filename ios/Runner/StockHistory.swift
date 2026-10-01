@@ -38,7 +38,8 @@ enum StockTableParser {
     }
     return [text.startIndex..<text.endIndex]
   }
-  static func rows(_ cells: [StockOCRCell]) throws -> [StockTextLine] {
+  static func rows(_ cells: [StockOCRCell],
+    retryInventory: ((CGFloat, CGFloat) throws -> [StockOCRCell])? = nil) throws -> [StockTextLine] {
     let ordered = cells.sorted {
       $0.box.midY == $1.box.midY ? $0.box.minX < $1.box.minX : $0.box.midY < $1.box.midY
     }
@@ -78,8 +79,14 @@ enum StockTableParser {
         (names[index - 1].map { $0.box.maxY }.max()! + parts.map { $0.box.minY }.min()!) / 2
       let end = index + 1 < names.count ?
         (parts.map { $0.box.maxY }.max()! + names[index + 1].map { $0.box.minY }.min()!) / 2 : footer
-      let stocks = body.filter { $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end }
-      let inventory = stocks.map(\.text).joined(separator: "\n")
+      var stocks = body.filter { $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end }
+      var inventory = stocks.map(\.text).joined(separator: "\n")
+      if inventory.range(of: "[0-9]", options: .regularExpression) == nil, let retry = retryInventory {
+        stocks = try retry(start, end).filter {
+          $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end
+        }.sorted { $0.box.midY < $1.box.midY }
+        inventory = stocks.map(\.text).joined(separator: "\n")
+      }
       guard !stocks.isEmpty, inventory.range(of: "[0-9]", options: .regularExpression) != nil else {
         throw StockHistoryError.invalid("第 \(index + 1) 项货物（\(parts.map(\.text).joined(separator: " "))）缺少可识别的库存数量，请核对原始长图")
       }
@@ -595,8 +602,57 @@ enum StockHistoryProcessor {
         }
       }
     }
-    return try StockTableParser.rows(cells)
+    return try StockTableParser.rows(cells) { start, end in
+      progress("正在放大复核未识别的库存行")
+      let crop = CGRect(x: CGFloat(columnX), y: max(0, start.rounded(.down)),
+        width: CGFloat(cg.width - columnX),
+        height: min(CGFloat(cg.height), end.rounded(.up)) - max(0, start.rounded(.down)))
+      // 短行单独放大，避开分块边缘和下面的预制物料表。只有该行真实 OCR
+      // 返回数字才接受；识别仍失败则继续抛错，不把缺失库存当作 0。
+      for (source, scale) in [(recognitionImage, 2), (cg, 2), (recognitionImage, 4)] {
+        let recovered = try inventoryRow(source, crop: crop, scale: scale)
+        if recovered.contains(where: { $0.text.range(of: "[0-9]", options: .regularExpression) != nil }) {
+          return recovered
+        }
+      }
+      throw StockHistoryError.invalid("库存行放大识别仍未读到数量（长图纵向位置 \(Int(start))～\(Int(min(end, CGFloat(cg.height))))），请核对原始长图")
+    }
 
+  }
+
+  static func inventoryRow(_ source: CGImage, crop: CGRect, scale: Int) throws -> [StockOCRCell] {
+    guard (1...4).contains(scale), crop.width > 0, crop.height > 0,
+      crop.minX >= 0, crop.minY >= 0,
+      crop.maxX <= CGFloat(source.width), crop.maxY <= CGFloat(source.height),
+      let tile = source.cropping(to: crop),
+      let context = CGContext(data: nil, width: tile.width * scale, height: tile.height * scale,
+        bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else {
+      throw StockHistoryError.invalid("无法放大库存行")
+    }
+    context.interpolationQuality = .high
+    context.draw(tile, in: CGRect(x: 0, y: 0, width: tile.width * scale, height: tile.height * scale))
+    guard let enlarged = context.makeImage() else { throw StockHistoryError.invalid("无法生成库存行识别图") }
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.recognitionLanguages = ["zh-Hans", "en-US"]
+    request.usesLanguageCorrection = false
+    try VNImageRequestHandler(cgImage: enlarged, options: [:]).perform([request])
+    guard let results = request.results else { throw StockHistoryError.invalid("库存行识别未返回结果") }
+    return try results.compactMap { observation in
+      let dx = observation.topRight.x - observation.topLeft.x
+      let dy = observation.topRight.y - observation.topLeft.y
+      if abs(dy) * Double(enlarged.height) > abs(dx) * Double(enlarged.width) * 0.25 { return nil }
+      guard let candidate = observation.topCandidates(1).first else {
+        throw StockHistoryError.invalid("库存行识别候选为空")
+      }
+      let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !text.isEmpty else { throw StockHistoryError.invalid("库存行识别文字为空") }
+      let box = observation.boundingBox
+      return StockOCRCell(text: text, confidence: Double(candidate.confidence),
+        box: CGRect(x: crop.minX + box.minX * CGFloat(tile.width),
+          y: crop.minY + (1 - box.maxY) * CGFloat(tile.height),
+          width: box.width * CGFloat(tile.width), height: box.height * CGFloat(tile.height)))
+    }
   }
 }
 

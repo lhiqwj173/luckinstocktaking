@@ -485,11 +485,15 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
             ),
             const SizedBox(height: 12),
             Text(
-              '导入于 ${_date(widget.document.createdAt)} · ${_lines.length} 项货物',
+              '导入于 ${_date(widget.document.createdAt)} · ${_document.schemaVersion == 2 ? '${_lines.length} 项货物' : '等待整理货物表'}',
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
-            const Text('识别结果已自动保存。请核对品名、数量和单位；点击铅笔可修正，完成后标记已校对。'),
+            Text(
+              _document.schemaVersion == 2
+                  ? '识别结果已自动保存。请核对品名、数量和单位；点击铅笔可修正，完成后标记已校对。'
+                  : '原始长图已保留，货物表尚未整理完成。可切换查看长图核对。',
+            ),
             if (_error != null)
               Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
             const SizedBox(height: 16),

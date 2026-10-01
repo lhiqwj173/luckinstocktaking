@@ -148,6 +148,9 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('库存识别失败'), findsOneWidget);
+    expect(find.textContaining('等待整理货物表'), findsOneWidget);
+    expect(find.textContaining('2 项货物'), findsNothing);
+    expect(find.textContaining('识别结果已自动保存'), findsNothing);
     await tester.ensureVisible(find.text('查看长图'));
     await tester.tap(find.text('查看长图'));
     await tester.pumpAndSettle();
