@@ -5,6 +5,34 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  func testResignedCaptureProfile() throws {
+    let renamed = "group.com.luckinstocktaking.shared.resigned"
+    let plist = try PropertyListSerialization.data(fromPropertyList: [
+      "Entitlements": ["com.apple.security.application-groups": [renamed]],
+    ], format: .xml, options: 0)
+    var cms = Data([0x30, 0x82, 0x01, 0x00])
+    cms.append(plist)
+    cms.append(Data([0x00, 0xff]))
+    let groups = try StockCaptureSession.profileGroups(cms)
+    XCTAssertEqual(try StockCaptureSession.selectGroup(groups), renamed)
+    XCTAssertEqual(try StockCaptureSession.selectGroup([renamed, StockCaptureSession.group]), StockCaptureSession.group)
+    XCTAssertThrowsError(try StockCaptureSession.selectGroup([renamed, "group.other"]))
+  }
+
+  func testCaptureProfileRejectsMissingOrInvalidGrant() throws {
+    let cases: [[String: Any]] = [[:],
+      ["com.apple.security.application-groups": [] as [String]],
+      ["com.apple.security.application-groups": ["invalid"]],
+      ["com.apple.security.application-groups": [StockCaptureSession.group, StockCaptureSession.group]],
+    ]
+    for entitlements in cases {
+      let plist = try PropertyListSerialization.data(fromPropertyList: ["Entitlements": entitlements],
+        format: .xml, options: 0)
+      XCTAssertThrowsError(try StockCaptureSession.profileGroups(plist))
+    }
+    XCTAssertThrowsError(try StockCaptureSession.profileGroups(Data("damaged".utf8)))
+  }
+
   private func pattern() -> CGImage {
     let format = UIGraphicsImageRendererFormat()
     format.scale = 1

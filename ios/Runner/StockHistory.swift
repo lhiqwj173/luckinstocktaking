@@ -486,9 +486,10 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
       throw StockCaptureError.invalid("无法显示系统录屏入口")
     }
     while let next = presenter.presentedViewController { presenter = next }
+    let extensionID = try StockCaptureSession.broadcastExtensionID()
     _ = try StockCaptureSession.prepare(top: top, bottom: bottom)
     captureConfigured = true
-    let controller = StockCaptureStartView()
+    let controller = StockCaptureStartView(extensionID: extensionID)
     captureStartView = controller
     presenter.present(controller, animated: true)
   }
@@ -637,6 +638,12 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
 
 final class StockCaptureStartView: UIViewController {
   private let label = UILabel()
+  private let extensionID: String
+  init(extensionID: String) {
+    self.extensionID = extensionID
+    super.init(nibName: nil, bundle: nil)
+  }
+  required init?(coder: NSCoder) { fatalError("不支持 storyboard 初始化") }
   func showProcessing() {
     label.text = "录屏已接收\n\n正在拼接长截图、识别文字并保存历史。\n请保持助手打开，完成后自动显示结果。"
   }
@@ -646,7 +653,7 @@ final class StockCaptureStartView: UIViewController {
     label.text = "读取旧盘点单\n\n点击下方系统录屏按钮，并确认「开始直播」。\n随后切回瑞幸盘，从单据顶部缓慢滚动到底。\n\n结束系统录屏后返回助手，自动拼接、识别并保存历史。\n录屏仅保存在本机，不上传、不保存音轨。"
     label.numberOfLines = 0; label.textAlignment = .center
     let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 80, height: 80))
-    picker.preferredExtension = StockCaptureSession.extensionID
+    picker.preferredExtension = extensionID
     picker.showsMicrophoneButton = false
     let close = UIButton(type: .system)
     close.setTitle("返回助手", for: .normal)
