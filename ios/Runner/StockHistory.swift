@@ -119,8 +119,10 @@ enum StockHistoryStorage {
   }
 
   static func pendingDocument(onProcessing: () -> Void = {}) throws -> String? {
-    // 只在安装的主 App 能访问共享目录时读取扩展结果；无待处理会话是合法状态。
-    _ = try consumeCapture(onProcessing: onProcessing)
+    // 手动文件快捷指令已生成的待校对记录应独立于录屏扩展权限。
+    if UserDefaults.standard.object(forKey: pendingKey) == nil {
+      _ = try consumeCapture(onProcessing: onProcessing)
+    }
     guard let value = UserDefaults.standard.object(forKey: pendingKey) else { return nil }
     guard let id = value as? String else { throw StockHistoryError.invalid("待打开的盘点单标识损坏") }
     let record = try JSONDecoder().decode(StockHistoryDocument.self,
@@ -223,37 +225,47 @@ struct StockCrop {
 
 struct StockGrayFrame {
   let pixels: [UInt8]
+  let smooth: [UInt8]
   let width: Int
   let height: Int
-  init(_ image: CGImage, fullHeight: Bool = false) throws {
-    let width = 96
-    let height = fullHeight ? image.height : min(640, image.height)
+  init(_ image: CGImage) throws {
+    let width = 192
+    // 保留原始行高，避免竖向缩小后文字采样相位改变，造成虚假的接缝误差。
+    let height = image.height
     var bytes = [UInt8](repeating: 0, count: width * height)
     let rendered = bytes.withUnsafeMutableBytes { buffer -> Bool in
       guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
         bitsPerComponent: 8, bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
         bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
-      context.interpolationQuality = .medium
+      context.interpolationQuality = .high
       context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
       return true
     }
     guard rendered else { throw StockHistoryError.invalid("无法创建拼接特征") }
-    self.width = width
-    self.height = height
-    pixels = bytes
+    // 淡灰水印不应参与定位；原始截图仍完整保留，用于校对。
+    for index in bytes.indices { bytes[index] = UInt8(min(255, Int(bytes[index]) * 255 / 210)) }
+    var blurred = bytes
+    for y in 3..<(height - 3) {
+      for x in 0..<width {
+        var sum = 0
+        for row in (y - 3)...(y + 3) { sum += Int(bytes[row * width + x]) }
+        blurred[y * width + x] = UInt8(sum / 7)
+      }
+    }
+    self.width = width; self.height = height; pixels = bytes; smooth = blurred
   }
 
-  func error(with other: StockGrayFrame, shift: Int) -> Double {
+  func error(with other: StockGrayFrame, shift: Int, smoothed: Bool = false) -> Double {
     precondition(width == other.width && height == other.height)
+    let aPixels = smoothed ? smooth : pixels
+    let bPixels = smoothed ? other.smooth : other.pixels
     let start = max(0, -shift)
     let end = min(height, height - shift)
-    var sum = 0.0
-    var count = 0
-    // 只比较有内容的像素，白色背景不能成为高置信度接缝。
-    for y in stride(from: start + 2, to: end - 2, by: 3) {
-      for x in stride(from: 4, to: width - 4, by: 2) {
-        let a = Int(pixels[(y + shift) * width + x])
-        let b = Int(other.pixels[y * width + x])
+    var sum = 0.0; var count = 0
+    for y in stride(from: start + 3, to: end - 3, by: 6) {
+      for x in stride(from: 8, to: width - 8, by: 4) {
+        let a = Int(aPixels[(y + shift) * width + x])
+        let b = Int(bPixels[y * width + x])
         if min(a, b) < 220 { sum += Double(abs(a - b)); count += 1 }
       }
     }
@@ -264,28 +276,48 @@ struct StockGrayFrame {
     guard width == next.width, height == next.height else {
       throw StockHistoryError.invalid("录屏分辨率改变，请保持竖屏重新录制")
     }
-    if error(with: next, shift: 0) < 2 { return 0 }
+    if error(with: next, shift: 0) < 3 { return 0 }
     let limit = Int(Double(height) * 0.55)
-    let scores = (-limit...limit).map { ($0, error(with: next, shift: $0)) }
-    guard let best = scores.min(by: { $0.1 < $1.1 }), best.1 < 20 else {
-      throw StockHistoryError.invalid("无法匹配相邻画面，请排除固定栏并放慢滚动速度重新录屏")
+    let scores = stride(from: -limit, through: limit, by: 4).map {
+      ($0, error(with: next, shift: $0, smoothed: true))
     }
-    guard best.0 >= 0 else {
-      throw StockHistoryError.invalid("检测到向上回滚，请从单据顶部开始，始终向下滚动")
+    guard let coarse = scores.min(by: { $0.1 < $1.1 }), coarse.1.isFinite else {
+      throw StockHistoryError.invalid("相邻画面没有可靠重叠，请排除固定栏并放慢滚动速度")
     }
-    let competing = scores.filter { abs($0.0 - best.0) > 12 }.map { $0.1 }.min()
-    guard let alternative = competing, alternative > best.1 * 1.2 + 1 else {
-      throw StockHistoryError.invalid("画面重复或接缝不明确，无法可靠拼接，请调整裁剪范围重新录屏")
+    let fine = max(-limit, coarse.0 - 5)...min(limit, coarse.0 + 5)
+    guard let best = fine.map({ ($0, error(with: next, shift: $0)) }).min(by: { $0.1 < $1.1 }),
+      best.1 < 45, error(with: next, shift: best.0, smoothed: true) < 18 else {
+      throw StockHistoryError.invalid("接缝内容变化过大，请排除固定栏或弹窗后重新导入")
+    }
+    let competing = scores.filter { abs($0.0 - best.0) > 24 }.map { $0.1 }.min()
+    guard let alternative = competing,
+      alternative > error(with: next, shift: best.0, smoothed: true) * 1.2 + 2 else {
+      throw StockHistoryError.invalid("画面重复或接缝不明确，无法可靠拼接，请调整裁剪范围")
     }
     return best.0
   }
 }
 
+struct StockScrollCoverage {
+  private(set) var offset = 0
+  private(set) var furthest = 0
+  mutating func advance(by displacement: Int) throws -> Int {
+    offset += displacement
+    guard offset >= -3 else {
+      throw StockHistoryError.invalid("录屏回滚超过起始位置，请从单据顶部重新录制")
+    }
+    let added = max(0, offset - furthest)
+    furthest = max(furthest, offset)
+    return added
+  }
+}
+
 enum StockHistoryProcessor {
-  static func process(url: URL, video: Bool, crop: StockCrop, documentID: String = UUID().uuidString) throws -> StockHistoryDocument {
+  static func process(url: URL, video: Bool, crop: StockCrop, documentID: String = UUID().uuidString,
+    progress: (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let image: UIImage
     if video {
-      image = try stitch(url: url, crop: crop)
+      image = try stitch(url: url, crop: crop, progress: progress)
     } else {
       guard let source = UIImage(contentsOfFile: url.path) else {
         throw StockHistoryError.invalid("无法读取截图，请选择清晰的图片")
@@ -301,7 +333,8 @@ enum StockHistoryProcessor {
           height: source.size.height * source.scale)))
       }
     }
-    let lines = try recognize(image)
+    let lines = try recognize(image, progress: progress)
+    progress("正在保存长截图与识别结果")
     return try StockHistoryStorage.create(image: image, lines: lines, id: documentID)
   }
 
@@ -320,52 +353,51 @@ enum StockHistoryProcessor {
     return (generator, duration)
   }
 
-  static func stitch(url: URL, crop: StockCrop) throws -> UIImage {
+  static func stitch(url: URL, crop: StockCrop, progress: (String) -> Void = { _ in }) throws -> UIImage {
     try crop.validate()
     let (generator, duration) = try makeGenerator(url: url)
     var pieces: [CGImage] = []
-    var previous: CGImage?
+    var coverage = StockScrollCoverage()
     var previousGray: StockGrayFrame?
     var totalHeight = 0
     var width = 0
-    // 每秒 5 帧，逐帧释放解码临时对象，仅保留新增画面。
-    let samples = max(1, Int(ceil(duration * 5)))
+    // 每秒 10 帧，降低快速滑动时重叠区域丢失的风险。
+    let samples = max(1, Int(ceil(duration * 10)))
     for index in 0..<samples {
       try autoreleasepool {
-        let raw = try generator.copyCGImage(at: CMTime(seconds: Double(index) / 5,
+        let raw = try generator.copyCGImage(at: CMTime(seconds: Double(index) / 10,
           preferredTimescale: 600), actualTime: nil)
         let frame = try crop.apply(raw)
         let gray = try StockGrayFrame(frame)
-        if let old = previous, let oldGray = previousGray {
-          guard old.width == frame.width, old.height == frame.height else {
+        if let oldGray = previousGray {
+          guard width == frame.width, oldGray.height == frame.height else {
             throw StockHistoryError.invalid("录屏尺寸发生变化，请勿旋转屏幕")
           }
-          let displacement = try oldGray.displacement(to: gray)
-          if displacement == 0 { return }
-          // 用原始高度细化接缝，避免缩小特征造成数像素累计偏移。
-          let predicted = Int((Double(displacement) * Double(frame.height) / Double(gray.height)).rounded())
-          let radius = max(2, Int(ceil(Double(frame.height) / Double(gray.height))))
-          let oldFull = try StockGrayFrame(old, fullHeight: true)
-          let nextFull = try StockGrayFrame(frame, fullHeight: true)
-          let shifts = max(1, predicted - radius)...min(frame.height - 1, predicted + radius)
-          guard let best = shifts.map({ ($0, oldFull.error(with: nextFull, shift: $0)) })
-            .min(by: { $0.1 < $1.1 }), best.1 < 20,
-            let strip = frame.cropping(to: CGRect(x: 0, y: frame.height - best.0,
-              width: frame.width, height: best.0)) else {
-            throw StockHistoryError.invalid("接缝校验失败，请缓慢滚动重新录屏")
+          let displacement: Int
+          do { displacement = try oldGray.displacement(to: gray) }
+          catch { throw StockHistoryError.invalid("录屏第 \(String(format: "%.1f", Double(index) / 10)) 秒：\(error.localizedDescription)") }
+          let added = try coverage.advance(by: displacement)
+          if added > 0 {
+            guard added < frame.height, let strip = frame.cropping(to:
+              CGRect(x: 0, y: frame.height - added, width: frame.width, height: added)) else {
+              throw StockHistoryError.invalid("新增画面超出重叠范围，无法可靠拼接")
+            }
+            // CGImage.cropping 可能仍持有整帧解码缓冲；复制新增区域，避免数百帧占用数 GB。
+            pieces.append(try ownedImage(strip))
+            totalHeight += strip.height
           }
-          pieces.append(strip)
-          totalHeight += strip.height
         } else {
-          pieces.append(frame)
+          pieces.append(try ownedImage(frame))
           width = frame.width
           totalHeight = frame.height
         }
-        guard totalHeight <= 32_000, width * totalHeight <= 40_000_000 else {
+        guard totalHeight <= 48_000, width * totalHeight <= 40_000_000 else {
           throw StockHistoryError.invalid("盘点单过长，请分成多段录屏导入")
         }
-        previous = frame
         previousGray = gray
+        if index % 10 == 0 || index == samples - 1 {
+          progress("正在拼接录屏 · \(Int(Double(index + 1) / Double(samples) * 100))%")
+        }
       }
     }
     guard !pieces.isEmpty else { throw StockHistoryError.invalid("录屏中没有可读取的画面") }
@@ -381,8 +413,37 @@ enum StockHistoryProcessor {
     }
   }
 
-  static func recognize(_ image: UIImage) throws -> [StockTextLine] {
+  static func ownedImage(_ image: CGImage) throws -> CGImage {
+    guard let context = CGContext(data: nil, width: image.width, height: image.height,
+      bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+      throw StockHistoryError.invalid("无法分配拼接图像内存")
+    }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    guard let result = context.makeImage() else { throw StockHistoryError.invalid("无法复制拼接图像") }
+    return result
+  }
+
+  static func textImage(_ image: CGImage) throws -> CGImage {
+    let size = image.width * image.height
+    var bytes = [UInt8](repeating: 0, count: size)
+    return try bytes.withUnsafeMutableBytes { buffer in
+      guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+        bitsPerComponent: 8, bytesPerRow: image.width, space: CGColorSpaceCreateDeviceGray(),
+        bitmapInfo: CGImageAlphaInfo.none.rawValue) else {
+        throw StockHistoryError.invalid("无法创建文字识别图像")
+      }
+      context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+      let pixels = buffer.bindMemory(to: UInt8.self)
+      for index in 0..<size { pixels[index] = UInt8(min(255, Int(pixels[index]) * 255 / 210)) }
+      guard let result = context.makeImage() else { throw StockHistoryError.invalid("无法生成文字识别图像") }
+      return result
+    }
+  }
+
+  static func recognize(_ image: UIImage, progress: (String) -> Void = { _ in }) throws -> [StockTextLine] {
     guard let cg = image.cgImage else { throw StockHistoryError.invalid("无法读取截图像素") }
+    let recognitionImage = try textImage(cg)
     struct Cell { let text: String; let confidence: Double; let box: CGRect }
     var cells: [Cell] = []
     // 对长图分块识别，用中心点归属消除块边缘重复；不按文本去重，保留真实重复行。
@@ -392,7 +453,8 @@ enum StockHistoryProcessor {
       try autoreleasepool {
         let top = max(0, start - margin)
         let bottom = min(cg.height, start + block + margin)
-        guard let tile = cg.cropping(to: CGRect(x: 0, y: top, width: cg.width, height: bottom - top)) else {
+        progress("正在识别文字 · \(start / block + 1)/\((cg.height + block - 1) / block)")
+        guard let tile = recognitionImage.cropping(to: CGRect(x: 0, y: top, width: cg.width, height: bottom - top)) else {
           throw StockHistoryError.invalid("无法分块读取长截图")
         }
         let request = VNRecognizeTextRequest()
@@ -405,6 +467,10 @@ enum StockHistoryProcessor {
           guard let candidate = observation.topCandidates(1).first else {
             throw StockHistoryError.invalid("文字识别候选为空")
           }
+          // 斜向水印不属于表格文字；保留横向的品名、编码与数量。
+          let dx = observation.topRight.x - observation.topLeft.x
+          let dy = observation.topRight.y - observation.topLeft.y
+          if abs(dy) * Double(tile.height) > abs(dx) * Double(tile.width) * 0.25 { continue }
           let bounds = observation.boundingBox
           let rect = CGRect(x: bounds.minX * Double(cg.width),
             y: Double(top) + (1 - bounds.maxY) * Double(bottom - top),
@@ -440,6 +506,7 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
   private var crop = StockCrop(top: 0.18, bottom: 0.10)
   private var captureConfigured = false
   private weak var captureStartView: StockCaptureStartView?
+  private var processingView: StockImportProgressView?
 
   init(messenger: FlutterBinaryMessenger) {
     channel = FlutterMethodChannel(name: "com.luckinstocktaking/history", binaryMessenger: messenger)
@@ -622,17 +689,58 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
   }
   private func process(_ url: URL) {
     let video = self.video, crop = self.crop
-    StockHistoryStorage.queue.async {
-      do {
-        let document = try StockHistoryProcessor.process(url: url, video: video, crop: crop)
-        let json = try document.json()
-        DispatchQueue.main.async { self.cleanup(url, value: json) }
-      } catch { DispatchQueue.main.async { self.cleanup(url, value: nil, error: error) } }
+    guard let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
+      let presenter = scene.windows.first(where: \.isKeyWindow)?.rootViewController else {
+      cleanup(url, value: nil, error: StockHistoryError.invalid("无法显示导入进度")); return
+    }
+    let controller = StockImportProgressView()
+    processingView = controller
+    presenter.present(controller, animated: true) {
+      StockHistoryStorage.queue.async {
+        do {
+          let document = try StockHistoryProcessor.process(url: url, video: video, crop: crop) { text in
+            DispatchQueue.main.async { self.processingView?.update(text) }
+          }
+          let json = try document.json()
+          DispatchQueue.main.async { self.cleanup(url, value: json) }
+        } catch { DispatchQueue.main.async { self.cleanup(url, value: nil, error: error) } }
+      }
     }
   }
   private func cleanup(_ url: URL, value: String?, error: Error? = nil) {
-    do { try FileManager.default.removeItem(at: url); finish(value, error: error) }
-    catch { finish(nil, error: error) }
+    let finalError: Error?
+    do { try FileManager.default.removeItem(at: url); finalError = error }
+    catch { finalError = error }
+    if let controller = processingView {
+      processingView = nil
+      controller.dismiss(animated: true) { self.finish(value, error: finalError) }
+    } else { finish(value, error: finalError) }
+  }
+}
+
+final class StockImportProgressView: UIViewController {
+  private let label = UILabel()
+  init() {
+    super.init(nibName: nil, bundle: nil)
+    isModalInPresentation = true
+  }
+  required init?(coder: NSCoder) { fatalError("不支持 storyboard 初始化") }
+  func update(_ text: String) { label.text = "\(text)\n\n请保持助手打开，完成后自动显示盘点单。" }
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    view.backgroundColor = .systemBackground
+    let spinner = UIActivityIndicatorView(style: .large)
+    spinner.startAnimating()
+    label.numberOfLines = 0; label.textAlignment = .center
+    update("正在读取录屏")
+    let stack = UIStackView(arrangedSubviews: [spinner, label])
+    stack.axis = .vertical; stack.spacing = 24; stack.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+      stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+      stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+    ])
   }
 }
 
@@ -686,13 +794,17 @@ final class StockCropPreview: UIViewController {
     top.maximumValue = 0.4; bottom.maximumValue = 0.3
     top.value = Float(crop.top); bottom.value = Float(crop.bottom)
     isModalInPresentation = true
+    modalPresentationStyle = .fullScreen
   }
   required init?(coder: NSCoder) { fatalError("不支持 storyboard 初始化") }
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = .systemBackground
     label.numberOfLines = 0; label.textAlignment = .center
+    label.setContentCompressionResistancePriority(.required, for: .vertical)
     picture.contentMode = .scaleAspectFit
+    picture.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+    picture.setContentHuggingPriority(.defaultLow, for: .vertical)
     top.addTarget(self, action: #selector(update), for: .valueChanged)
     bottom.addTarget(self, action: #selector(update), for: .valueChanged)
     let accept = UIButton(type: .system)
@@ -702,7 +814,7 @@ final class StockCropPreview: UIViewController {
     cancel.setTitle("取消", for: .normal)
     cancel.addTarget(self, action: #selector(close), for: .touchUpInside)
     let stack = UIStackView(arrangedSubviews: [label, picture, top, bottom, accept, cancel])
-    stack.axis = .vertical; stack.spacing = 16; stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .vertical; stack.spacing = 12; stack.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(stack)
     NSLayoutConstraint.activate([
       stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
@@ -710,6 +822,10 @@ final class StockCropPreview: UIViewController {
       stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
       stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
       picture.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
+      top.heightAnchor.constraint(equalToConstant: 32),
+      bottom.heightAnchor.constraint(equalToConstant: 32),
+      accept.heightAnchor.constraint(equalToConstant: 48),
+      cancel.heightAnchor.constraint(equalToConstant: 44),
     ])
     update()
   }
@@ -722,8 +838,12 @@ final class StockCropPreview: UIViewController {
     } catch { preconditionFailure(error.localizedDescription) }
   }
   @objc private func confirm() {
+    view.isUserInteractionEnabled = false
     let crop = StockCrop(top: Double(top.value), bottom: Double(bottom.value))
     dismiss(animated: true) { self.completion(crop) }
   }
-  @objc private func close() { dismiss(animated: true) { self.completion(nil) } }
+  @objc private func close() {
+    view.isUserInteractionEnabled = false
+    dismiss(animated: true) { self.completion(nil) }
+  }
 }

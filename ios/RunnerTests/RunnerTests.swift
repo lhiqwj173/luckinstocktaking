@@ -1,4 +1,5 @@
 import Flutter
+import CoreFoundation
 import UIKit
 import XCTest
 @testable import Runner
@@ -51,7 +52,7 @@ class RunnerTests: XCTestCase {
     }.cgImage!
   }
 
-  func testScrollAlignmentAndReverseRejection() throws {
+  func testScrollAlignmentInBothDirections() throws {
     let source = pattern()
     let first = source.cropping(to: CGRect(x: 0, y: 0, width: 192, height: 600))!
     let second = source.cropping(to: CGRect(x: 0, y: 120, width: 192, height: 600))!
@@ -59,7 +60,56 @@ class RunnerTests: XCTestCase {
     let b = try StockGrayFrame(second)
     XCTAssertEqual(try a.displacement(to: a), 0)
     XCTAssertEqual(try a.displacement(to: b), 120)
-    XCTAssertThrowsError(try b.displacement(to: a))
+    XCTAssertEqual(try b.displacement(to: a), -120)
+  }
+
+  func testBacktrackingDoesNotDuplicateDocumentRows() throws {
+    var coverage = StockScrollCoverage()
+    XCTAssertEqual(try coverage.advance(by: 120), 120)
+    XCTAssertEqual(try coverage.advance(by: -80), 0)
+    XCTAssertEqual(try coverage.advance(by: 50), 0)
+    XCTAssertEqual(try coverage.advance(by: 60), 30)
+    XCTAssertEqual(try coverage.advance(by: 0), 0)
+    XCTAssertEqual(coverage.furthest, 150)
+    XCTAssertThrowsError(try coverage.advance(by: -160))
+  }
+
+  func testOCRContrastSuppressesFaintWatermarkAndPreservesDarkInk() throws {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let source = UIGraphicsImageRenderer(size: CGSize(width: 192, height: 120), format: format).image { context in
+      UIColor(white: 230.0 / 255, alpha: 1).setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 192, height: 120))
+      UIColor(white: 60.0 / 255, alpha: 1).setFill()
+      context.fill(CGRect(x: 40, y: 40, width: 80, height: 40))
+    }.cgImage!
+    let output = try StockHistoryProcessor.textImage(source)
+    XCTAssertEqual(output.width, source.width)
+    XCTAssertEqual(output.height, source.height)
+    XCTAssertEqual(output.bitsPerPixel, 8)
+    let data = output.dataProvider!.data!
+    let pixels = CFDataGetBytePtr(data)!
+    let values = (0..<CFDataGetLength(data)).map { pixels[$0] }
+    XCTAssertTrue(values.contains(255))
+    XCTAssertTrue(values.contains(where: { $0 < 100 }))
+    XCTAssertFalse(values.contains(where: { (210...254).contains($0) }))
+  }
+
+  func testCropPreviewKeepsInstructionsAndButtonsVisible() {
+    let controller = StockCropPreview(image: UIImage(cgImage: pattern()),
+      crop: StockCrop(top: 0.18, bottom: 0.10)) { _ in }
+    controller.loadViewIfNeeded()
+    controller.view.frame = CGRect(x: 0, y: 0, width: 375, height: 667)
+    controller.view.layoutIfNeeded()
+    let stack = controller.view.subviews.compactMap { $0 as? UIStackView }.first!
+    let label = stack.arrangedSubviews.compactMap { $0 as? UILabel }.first!
+    let buttons = stack.arrangedSubviews.compactMap { $0 as? UIButton }
+    XCTAssertGreaterThan(label.frame.height, 30)
+    XCTAssertEqual(buttons.count, 2)
+    XCTAssertGreaterThanOrEqual(buttons[0].frame.height, 44)
+    XCTAssertGreaterThanOrEqual(buttons[1].frame.height, 44)
+    XCTAssertLessThanOrEqual(buttons[0].frame.maxY, buttons[1].frame.minY)
+    XCTAssertLessThanOrEqual(stack.frame.maxY, controller.view.bounds.maxY)
   }
 
   func testBlankAndUnmatchedImagesAreNotAccepted() throws {

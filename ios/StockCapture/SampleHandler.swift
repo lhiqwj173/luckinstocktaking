@@ -47,7 +47,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
       if let checked = lastSample, CMTimeCompare(time, checked) < 0 {
         throw StockCaptureError.invalid("录屏时间戳发生回退，请重新录制")
       }
-      if let checked = lastSample, CMTimeGetSeconds(time - checked) < 0.19 { return }
+      if let checked = lastSample, CMTimeGetSeconds(time - checked) < 0.09 { return }
       lastSample = time
       if try StockCaptureSession.hostForeground() {
         inactiveTime = nil
@@ -81,7 +81,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
           AVVideoCodecKey: AVVideoCodecType.h264,
           AVVideoWidthKey: width, AVVideoHeightKey: height,
           AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 3_000_000,
-            AVVideoExpectedSourceFrameRateKey: 5, AVVideoMaxKeyFrameIntervalKey: 5],
+            AVVideoExpectedSourceFrameRateKey: 10, AVVideoMaxKeyFrameIntervalKey: 10],
         ])
         input.expectsMediaDataInRealTime = true
         switch current {
