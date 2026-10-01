@@ -6,32 +6,17 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
-  func testResignedCaptureProfile() throws {
-    let renamed = "group.com.luckinstocktaking.shared.resigned"
-    let plist = try PropertyListSerialization.data(fromPropertyList: [
-      "Entitlements": ["com.apple.security.application-groups": [renamed]],
-    ], format: .xml, options: 0)
-    var cms = Data([0x30, 0x82, 0x01, 0x00])
-    cms.append(plist)
-    cms.append(Data([0x00, 0xff]))
-    let groups = try StockCaptureSession.profileGroups(cms)
-    XCTAssertEqual(try StockCaptureSession.selectGroup(groups), renamed)
-    XCTAssertEqual(try StockCaptureSession.selectGroup([renamed, StockCaptureSession.group]), StockCaptureSession.group)
-    XCTAssertThrowsError(try StockCaptureSession.selectGroup([renamed, "group.other"]))
-  }
-
-  func testCaptureProfileRejectsMissingOrInvalidGrant() throws {
-    let cases: [[String: Any]] = [[:],
-      ["com.apple.security.application-groups": [] as [String]],
-      ["com.apple.security.application-groups": ["invalid"]],
-      ["com.apple.security.application-groups": [StockCaptureSession.group, StockCaptureSession.group]],
-    ]
-    for entitlements in cases {
-      let plist = try PropertyListSerialization.data(fromPropertyList: ["Entitlements": entitlements],
-        format: .xml, options: 0)
-      XCTAssertThrowsError(try StockCaptureSession.profileGroups(plist))
+  func testShortcutOverweightRuleMatchesApp() throws {
+    guard #available(iOS 16.0, *) else { throw XCTSkip("快捷指令要求 iOS 16") }
+    let json = #"{"name":"奶油","aliases":[],"type":"portionBox","singleServingGrams":100,"allowMultiple":false}"#
+    let category = try JSONDecoder().decode(IntentCategory.self, from: Data(json.utf8))
+    for weight in [350.0, 367.5, 367.51, 500.0] {
+      XCTAssertEqual(try category.calculate(weight: weight), "奶油：0.9 份")
     }
-    XCTAssertThrowsError(try StockCaptureSession.profileGroups(Data("damaged".utf8)))
+    XCTAssertThrowsError(try category.calculate(weight: 249.99))
+    let multiple = try JSONDecoder().decode(IntentCategory.self,
+      from: Data(json.replacingOccurrences(of: "false", with: "true").utf8))
+    XCTAssertEqual(try multiple.calculate(weight: 500), "奶油：2.5 份")
   }
 
   private func pattern() -> CGImage {
@@ -95,21 +80,26 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(values.contains(where: { (210...254).contains($0) }))
   }
 
-  func testCropPreviewKeepsInstructionsAndButtonsVisible() {
-    let controller = StockCropPreview(image: UIImage(cgImage: pattern()),
-      crop: StockCrop(top: 0.18, bottom: 0.10)) { _ in }
-    controller.loadViewIfNeeded()
-    controller.view.frame = CGRect(x: 0, y: 0, width: 375, height: 667)
-    controller.view.layoutIfNeeded()
-    let stack = controller.view.subviews.compactMap { $0 as? UIStackView }.first!
-    let label = stack.arrangedSubviews.compactMap { $0 as? UILabel }.first!
-    let buttons = stack.arrangedSubviews.compactMap { $0 as? UIButton }
-    XCTAssertGreaterThan(label.frame.height, 30)
-    XCTAssertEqual(buttons.count, 2)
-    XCTAssertGreaterThanOrEqual(buttons[0].frame.height, 44)
-    XCTAssertGreaterThanOrEqual(buttons[1].frame.height, 44)
-    XCTAssertLessThanOrEqual(buttons[0].frame.maxY, buttons[1].frame.minY)
-    XCTAssertLessThanOrEqual(stack.frame.maxY, controller.view.bounds.maxY)
+  func testTablePairsMultilineNamesAndQuantitiesByProductCode() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
+    }
+    let cells = [
+      cell("货物规格名称", 20, 0), cell("实盘总库存", 440, 0),
+      cell("两用不锈钢量勺（大）JZ", 80, 50), cell("GS00099-01", 80, 80), cell("3个", 500, 65),
+      cell("奶油 0.5L", 80, 120), cell("GS00147-01", 80, 150),
+      cell("总库存：7个", 500, 120), cell("冷藏：2个", 500, 145), cell("冷冻：5个", 500, 170),
+      cell("奶油 0.5L", 80, 210), cell("GS00147-01", 80, 240), cell("0个", 500, 225),
+      cell("预制物料信息", 20, 280), cell("不应进入货物表", 80, 320),
+    ]
+    let rows = try StockTableParser.rows(cells)
+    XCTAssertEqual(rows.count, 3)
+    XCTAssertEqual(rows[0].cells, ["两用不锈钢量勺（大）JZ\nGS00099-01", "3个"])
+    XCTAssertEqual(rows[1].cells[1], "总库存：7个\n冷藏：2个\n冷冻：5个")
+    XCTAssertEqual(rows[2].cells[1], "0个")
+    XCTAssertTrue(rows.allSatisfy { $0.cells.count == 2 })
+    XCTAssertThrowsError(try StockTableParser.rows(cells.filter { $0.text != "3个" }))
+    XCTAssertThrowsError(try StockTableParser.rows(cells.filter { $0.text != "实盘总库存" }))
   }
 
   func testBlankAndUnmatchedImagesAreNotAccepted() throws {

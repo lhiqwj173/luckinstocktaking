@@ -4,22 +4,15 @@ import 'package:flutter/services.dart';
 import 'stock_history.dart';
 
 const historyInstructions =
-    '自动录屏：快捷指令只需添加「开始读取旧盘点单」。\n'
-    '运行后点系统录屏按钮，并确认「开始直播」，再切回瑞幸盘滚动单据。\n'
-    '结束系统录屏后返回助手，自动拼接、识别并保存为待校对历史，无需选择视频。\n'
-    '录屏只保存在本机；专用入口隐藏麦克风按钮，不保存音轨。\n'
-    'iOS 仍要求确认开始，且不会保证结束后自动切回助手。\n\n'
-    '手动导入已有录屏：\n'
-    '1. 在瑞幸盘打开旧盘点单，从顶部开始系统录屏。\n'
-    '2. 顶部和底部各停留 1 秒，始终朝下缓慢滚动，到底后停止录屏；不要切换页面或横竖屏。\n'
-    '若录屏含控制中心或停止录屏弹窗，先在系统照片中剪掉开头和结尾的遮挡画面。\n'
-    '3. 快捷指令添加「选择照片」（选择视频）→「读取旧盘点单」，'
-    '把选中视频传入「盘点单文件」，打开「录屏视频」。\n'
-    '4. 用「顶部裁剪比例」「底部裁剪比例」排除固定导航和底栏；'
-    '默认分别为 0.18 和 0.10，可先在助手内预览调整。\n'
-    '5. 添加「打开 App」→称重盘点助手，进入「旧盘点单」校对并保存。\n'
-    '也可以直接在本页导入录屏或已有长截图。快捷指令导入的记录会标为待校对。\n'
-    '录屏最长 120 秒；一次只处理一张盘点单。搜索覆盖单据名称和所有文字。';
+    '1. 在瑞幸盘打开旧盘点单，使用系统录屏，从顶部缓慢滚动到底。\n'
+    '画面须包含「货物规格名称 / 实盘总库存」表头，顶部和底部各停留一秒。\n'
+    '2. 结束录屏，点击「拼接录屏」选择视频。请先剪掉控制中心和停止录屏弹窗。\n'
+    '3. 应用自动拼接、识别并保存两列盘点表，无需调整参数。\n'
+    '点击「查看长图」核对拼接，再校对品名和库存。\n'
+    '\n'
+    '快捷指令：「选择照片」（选择录屏视频）→「拼接盘点单录屏」，将选中视频传入「盘点单文件」，保持「录屏视频」开启。\n'
+    '运行后自动处理并打开结果；也可在快捷指令的分享表单中接收相册视频作为输入。\n'
+    '录屏最长 120 秒，一次只处理一张盘点单；也支持直接识别长截图。\n';
 
 class StockHistoryPage extends StatefulWidget {
   const StockHistoryPage({super.key});
@@ -35,8 +28,6 @@ class _StockHistoryPageState extends State<StockHistoryPage>
   String? _error;
   bool _busy = false;
   bool _ready = false;
-  double _top = .18;
-  double _bottom = .10;
 
   @override
   void initState() {
@@ -91,42 +82,10 @@ class _StockHistoryPageState extends State<StockHistoryPage>
   });
 
   Future<void> _import(bool video) => _operation(() async {
-    final document = await _store.pick(
-      video: video,
-      top: _top,
-      bottom: _bottom,
-    );
+    final document = await _store.pick(video: video);
     if (document == null || !mounted) return;
     await _open(document);
   });
-  Future<void> _startCapture() =>
-      _operation(() => _store.startCapture(top: _top, bottom: _bottom));
-  Future<void> _clearCaptureFailures() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('清除失败的录屏任务？'),
-        content: const Text('将删除失败录屏的临时视频与错误记录。已保存的历史盘点单会保留。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('清除'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    await _operation(() async {
-      await _store.clearCaptureFailures();
-      final documents = await _store.load();
-      if (mounted) setState(() => _documents = documents);
-    });
-  }
-
   Future<void> _open(StockDocument document) async {
     await Navigator.of(context).push<StockDocument>(
       MaterialPageRoute(builder: (_) => StockDocumentPage(document: document)),
@@ -194,14 +153,9 @@ class _StockHistoryPageState extends State<StockHistoryPage>
                   runSpacing: 12,
                   children: [
                     FilledButton.icon(
-                      onPressed: _busy || !_ready ? null : _startCapture,
-                      icon: const Icon(Icons.screen_share_outlined),
-                      label: const Text('开始自动录屏'),
-                    ),
-                    FilledButton.icon(
                       onPressed: _busy || !_ready ? null : () => _import(true),
                       icon: const Icon(Icons.video_library_outlined),
-                      label: const Text('导入录屏'),
+                      label: const Text('拼接录屏'),
                     ),
                     OutlinedButton.icon(
                       onPressed: _busy || !_ready ? null : () => _import(false),
@@ -214,36 +168,11 @@ class _StockHistoryPageState extends State<StockHistoryPage>
             ),
           ),
           ExpansionTile(
-            title: const Text('录屏范围与快捷指令'),
+            title: const Text('录屏使用说明'),
             children: [
-              const Text('裁剪固定栏（只影响录屏）。选择视频后会先显示首帧范围预览。'),
-              Text('顶部裁剪 ${(_top * 100).round()}%'),
-              Slider(
-                value: _top,
-                min: 0,
-                max: .4,
-                divisions: 40,
-                onChanged: _busy
-                    ? null
-                    : (value) => setState(() => _top = value),
-              ),
-              Text('底部裁剪 ${(_bottom * 100).round()}%'),
-              Slider(
-                value: _bottom,
-                min: 0,
-                max: .3,
-                divisions: 30,
-                onChanged: _busy
-                    ? null
-                    : (value) => setState(() => _bottom = value),
-              ),
               const SelectableText(
                 historyInstructions,
                 style: TextStyle(height: 1.8),
-              ),
-              TextButton(
-                onPressed: _busy ? null : _clearCaptureFailures,
-                child: const Text('清除失败的录屏任务'),
               ),
               TextButton.icon(
                 onPressed: () async {
@@ -320,7 +249,9 @@ class _StockHistoryPageState extends State<StockHistoryPage>
                   overflow: TextOverflow.ellipsis,
                 ),
                 subtitle: Text(
-                  '${_date(document.createdAt)} · ${document.lines.length} 行 · ${document.reviewed ? '已校对' : '待校对'}',
+                  document.schemaVersion == 2
+                      ? '${_date(document.createdAt)} · ${document.lines.length} 项货物 · ${document.reviewed ? '已校对' : '待校对'}'
+                      : '${_date(document.createdAt)} · 待整理为两列表格',
                 ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _operation(() => _open(document)),
@@ -346,6 +277,8 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   final _query = TextEditingController();
   late final TextEditingController _title;
   late List<StockLine> _lines;
+  late StockDocument _document;
+  bool _preparing = false;
   Uint8List? _image;
   String? _error;
   bool _saving = false;
@@ -354,17 +287,30 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   @override
   void initState() {
     super.initState();
-    _title = TextEditingController(text: widget.document.title);
+    _document = widget.document;
+    _title = TextEditingController(text: _document.title);
     _lines = [...widget.document.lines];
-    _loadImage();
+    _prepare();
   }
 
-  Future<void> _loadImage() async {
+  Future<void> _prepare() async {
+    setState(() => _preparing = true);
     try {
-      final image = await _store.image(widget.document);
+      final image = await _store.image(_document);
       if (mounted) setState(() => _image = image);
+      final table = await _store.table(_document);
+      if (mounted) {
+        setState(() {
+          _document = table;
+          _lines = [...table.lines];
+        });
+      }
     } on PlatformException catch (error) {
       if (mounted) setState(() => _error = error.message ?? error.code);
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } finally {
+      if (mounted) setState(() => _preparing = false);
     }
   }
 
@@ -381,7 +327,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
       _error = null;
     });
     try {
-      final document = widget.document.edited(_title.text, _lines);
+      final document = _document.edited(_title.text, _lines);
       await _store.save(document);
       if (mounted) Navigator.pop(context, document);
     } on FormatException catch (error) {
@@ -394,41 +340,48 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   }
 
   Future<void> _edit(int index) async {
-    final controller = TextEditingController(
-      text: _lines[index].cells.join('\t'),
-    );
-    final result = await showDialog<String>(
+    final name = TextEditingController(text: _lines[index].cells[0]);
+    final inventory = TextEditingController(text: _lines[index].cells[1]);
+    final result = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('校对这一行'),
-        content: TextField(
-          controller: controller,
-          maxLines: 5,
-          decoration: const InputDecoration(
-            helperText: '用制表符或 | 分隔单元格',
-            border: OutlineInputBorder(),
+        title: const Text('校对货物'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: name,
+                maxLines: 4,
+                decoration: const InputDecoration(labelText: '货物规格名称'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: inventory,
+                maxLines: 4,
+                decoration: const InputDecoration(labelText: '实盘总库存'),
+              ),
+            ],
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(context, false),
             child: const Text('取消'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
+            onPressed: () => Navigator.pop(context, true),
             child: const Text('更新'),
           ),
         ],
       ),
     );
-    controller.dispose();
-    if (result == null || !mounted) return;
-    final cells = result
-        .split(RegExp(r'[\t|]'))
-        .map((cell) => cell.trim())
-        .toList();
+    final cells = [name.text.trim(), inventory.text.trim()];
+    name.dispose();
+    inventory.dispose();
+    if (result != true || !mounted) return;
     if (cells.any((cell) => cell.isEmpty)) {
-      setState(() => _error = '单元格不能为空，请重新校对');
+      setState(() => _error = '名称和库存不能为空，请重新校对');
       return;
     }
     setState(() {
@@ -468,7 +421,13 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: FilledButton.icon(
-              onPressed: _saving || _image == null ? null : _save,
+              onPressed:
+                  _saving ||
+                      _preparing ||
+                      _document.schemaVersion != 2 ||
+                      _image == null
+                  ? null
+                  : _save,
               icon: const Icon(Icons.save_outlined),
               label: Text(_saving ? '正在保存…' : '保存修改并标记已校对'),
             ),
@@ -486,7 +445,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
             ),
             const SizedBox(height: 12),
             Text(
-              '导入于 ${_date(widget.document.createdAt)} · ${_lines.length} 行',
+              '导入于 ${_date(widget.document.createdAt)} · ${_lines.length} 项货物',
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
@@ -494,8 +453,30 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
             if (_error != null)
               Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
             const SizedBox(height: 16),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(
+                  value: false,
+                  label: Text('两列表格'),
+                  icon: Icon(Icons.table_chart_outlined),
+                ),
+                ButtonSegment(
+                  value: true,
+                  label: Text('查看长图'),
+                  icon: Icon(Icons.image_outlined),
+                ),
+              ],
+              selected: {_showImage},
+              onSelectionChanged: (selection) =>
+                  setState(() => _showImage = selection.single),
+            ),
+            const SizedBox(height: 16),
+            if (_preparing) ...[
+              const LinearProgressIndicator(),
+              const Text('正在从历史长图整理两列盘点表，请保持助手打开…'),
+            ],
             if (_showImage && _image != null) Image.memory(_image!),
-            if (!_showImage) ...[
+            if (!_showImage && !_preparing && _document.schemaVersion == 2) ...[
               TextField(
                 controller: _query,
                 onChanged: (_) => setState(() {}),
@@ -505,46 +486,83 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                 ),
               ),
               const SizedBox(height: 16),
-              if (matches.isEmpty) const Text('没有匹配的文字行'),
-              for (final entry in matches)
-                Card(
-                  color: entry.value.confidence < .8
-                      ? theme.colorScheme.errorContainer
-                      : null,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 32,
+              if (matches.isEmpty) const Text('没有匹配的货物'),
+              if (matches.isNotEmpty)
+                Table(
+                  columnWidths: const {
+                    0: FlexColumnWidth(3),
+                    1: FlexColumnWidth(2),
+                  },
+                  border: TableBorder.all(
+                    color: theme.colorScheme.outlineVariant,
+                  ),
+                  defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+                  children: [
+                    TableRow(
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primaryContainer,
+                      ),
+                      children: const [
+                        Padding(
+                          padding: EdgeInsets.all(12),
                           child: Text(
-                            '${entry.key + 1}',
-                            style: theme.textTheme.labelSmall,
+                            '货物规格名称',
+                            style: TextStyle(fontWeight: FontWeight.bold),
                           ),
                         ),
-                        Expanded(
-                          child: Wrap(
-                            spacing: 16,
-                            runSpacing: 8,
-                            children: [
-                              for (final cell in entry.value.cells)
-                                SelectableText(cell),
-                              if (entry.value.confidence < .8)
-                                const Text(
-                                  '需重点核对',
-                                  style: TextStyle(fontSize: 11),
-                                ),
-                            ],
+                        Padding(
+                          padding: EdgeInsets.all(12),
+                          child: Text(
+                            '实盘总库存',
+                            style: TextStyle(fontWeight: FontWeight.bold),
                           ),
-                        ),
-                        IconButton(
-                          onPressed: _saving ? null : () => _edit(entry.key),
-                          icon: const Icon(Icons.edit_outlined),
-                          tooltip: '校对文字',
                         ),
                       ],
                     ),
-                  ),
+                    for (final entry in matches)
+                      TableRow(
+                        decoration: BoxDecoration(
+                          color: entry.value.confidence < .8
+                              ? theme.colorScheme.errorContainer
+                              : entry.key.isEven
+                              ? theme.colorScheme.surfaceContainerLow
+                              : theme.colorScheme.surface,
+                        ),
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                SelectableText(entry.value.cells[0]),
+                                if (entry.value.confidence < .8)
+                                  const Text(
+                                    '需重点核对',
+                                    style: TextStyle(fontSize: 11),
+                                  ),
+                              ],
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(left: 12),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: SelectableText(entry.value.cells[1]),
+                                ),
+                                IconButton(
+                                  onPressed: _saving
+                                      ? null
+                                      : () => _edit(entry.key),
+                                  icon: const Icon(Icons.edit_outlined),
+                                  tooltip: '校对货物',
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
                 ),
             ],
           ],

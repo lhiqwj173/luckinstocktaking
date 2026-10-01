@@ -77,11 +77,10 @@ class Category {
       throw const FormatException('请输入有效的称重（克）');
     }
     final netGrams = weightGrams - tareGrams;
-    if (netGrams < 0 || (!allowMultiple && netGrams > singleServingGrams)) {
-      throw FormatException(
-        '称重超出 ${type.label} 的合理范围（${allowMultiple ? '$tareGrams 克以上' : '$tareGrams～${tareGrams + singleServingGrams} 克'}），请检查输入重量',
-      );
+    if (netGrams < 0) {
+      throw FormatException('${type.label}的称重不能低于皮重 $tareGrams 克，请检查输入重量');
     }
+    if (!allowMultiple && netGrams >= singleServingGrams) return '0.9';
     final scaled = netGrams / singleServingGrams * 10 + 0.5;
     if (!scaled.isFinite) throw const FormatException('称重与单份重量的比值超出有效范围');
     final roundedTenths = scaled.floor();

@@ -37,7 +37,8 @@ void main() {
     expect(other.calculate(35), '0.1');
     expect(other.calculate(85), '0.5');
     expect(other.calculate(135), '0.9');
-    expect(() => other.calculate(135.01), throwsFormatException);
+    expect(other.calculate(135.01), '0.9');
+    expect(other.calculate(150), '0.9');
     expect(
       const Category(
         name: '零皮重',
@@ -103,11 +104,15 @@ void main() {
     expect(Category.fromJson(multiple.toJson()).allowMultiple, isTrue);
   });
 
-  test('原始称重超出皮重至一份重量范围仍报错', () {
-    for (final weight in [249.99, 350.01, double.nan, double.infinity]) {
+  test('单份模式超重含超过5%均按0.9份，非法输入仍报错', () {
+    for (final weight in [249.99, double.nan, double.infinity]) {
       expect(() => box.calculate(weight), throwsFormatException);
     }
-    expect(() => clip.calculate(100.01), throwsFormatException);
+    for (final weight in <double>[350.01, 367.5, 367.51, 500, 1000000]) {
+      expect(box.calculate(weight), '0.9');
+    }
+    expect(clip.calculate(100.01), '0.9');
+    expect(clip.calculate(106), '0.9');
     expect(() => clip.calculate(19.99), throwsFormatException);
   });
 

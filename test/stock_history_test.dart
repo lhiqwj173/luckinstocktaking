@@ -55,7 +55,7 @@ void main() {
       return bytes!.buffer.asUint8List();
     });
     var consumed = false;
-    var startChecks = 0;
+    var pendingChecks = 0;
     Map<String, dynamic>? saved;
     messenger.setMockMethodCallHandler(
       const MethodChannel('com.luckinstocktaking/catalog'),
@@ -65,13 +65,25 @@ void main() {
     );
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
       switch (call.method) {
-        case 'pendingStart':
-          startChecks++;
-          return null;
         case 'pending':
+          pendingChecks++;
           if (consumed) return null;
           consumed = true;
           return jsonEncode(record());
+        case 'table':
+          final table = record();
+          table['schemaVersion'] = 2;
+          table['lines'] = [
+            {
+              'cells': ['椰乳', '01.20盒'],
+              'confidence': .72,
+            },
+            {
+              'cells': ['椰乳', '01.20盒'],
+              'confidence': .91,
+            },
+          ];
+          return jsonEncode(table);
         case 'image':
           return png!;
         case 'save':
@@ -84,6 +96,10 @@ void main() {
     await tester.pumpWidget(const StocktakingApp());
     await tester.pumpAndSettle();
     expect(find.text('盘点单详情'), findsOneWidget);
+    expect(find.byType(Table), findsOneWidget);
+    expect(find.text('货物规格名称'), findsOneWidget);
+    expect(find.text('实盘总库存'), findsOneWidget);
+    expect(find.text('查看长图'), findsOneWidget);
     tester.binding.channelBuffers.push(
       StockHistoryStore.channel.name,
       const StandardMethodCodec().encodeMethodCall(
@@ -92,7 +108,7 @@ void main() {
       (_) {},
     );
     await tester.pumpAndSettle();
-    expect(startChecks, 2, reason: '查看历史时仍应响应新的录屏快捷指令');
+    expect(pendingChecks, 2, reason: '查看历史时仍应响应拼接快捷指令完成通知');
     await tester.enterText(find.byType(TextField).first, '已校对的盘点单');
     await tester.ensureVisible(find.text('保存修改并标记已校对'));
     await tester.tap(find.text('保存修改并标记已校对'));
@@ -129,9 +145,38 @@ void main() {
     expect(document.matches('  '), true);
   });
 
+  test('两列表格保留多行名称库存并拒绝缺列', () {
+    final data = {
+      ...record(),
+      'schemaVersion': 2,
+      'lines': [
+        {
+          'cells': ['奶油 0.5L\nGS00147-01', '总库存：7个\n冷藏：2个\n冷冻：5个'],
+          'confidence': .8,
+        },
+      ],
+    };
+    final document = StockDocument.fromJson(data);
+    expect(document.schemaVersion, 2);
+    expect(document.edited('已校对', document.lines).toJson()['schemaVersion'], 2);
+    expect(document.matches('GS00147 冷冻'), true);
+    expect(
+      () => StockDocument.fromJson({
+        ...data,
+        'lines': [
+          {
+            'cells': ['仅有名称'],
+            'confidence': .8,
+          },
+        ],
+      }),
+      throwsFormatException,
+    );
+  });
+
   test('拒绝损坏历史版本、路径、空行和非法置信度', () {
     for (final broken in [
-      {...record(), 'schemaVersion': 2},
+      {...record(), 'schemaVersion': 3},
       {...record(), 'imageName': '../other.png'},
       {...record(), 'title': ' '},
       {...record(), 'lines': []},
@@ -171,39 +216,22 @@ void main() {
     await expectLater(StockHistoryStore().load(), throwsStateError);
   });
 
-  test('自动录屏启动传递固定裁剪配置，失败必须向调用方报错', () async {
-    MethodCall? received;
+  testWidgets('拼接录屏选择用户录制的视频且不启动录屏', (tester) async {
+    final calls = <MethodCall>[];
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
-      received = call;
-      return null;
-    });
-    await StockHistoryStore().startCapture(top: .22, bottom: .08);
-    expect(received!.method, 'startCapture');
-    expect(received!.arguments, {'top': .22, 'bottom': .08});
-    messenger.setMockMethodCallHandler(
-      StockHistoryStore.channel,
-      (_) async =>
-          throw PlatformException(code: 'HISTORY_ERROR', message: '已有录屏正在进行'),
-    );
-    await expectLater(
-      StockHistoryStore().startCapture(top: .22, bottom: .08),
-      throwsA(isA<PlatformException>()),
-    );
-  });
-
-  testWidgets('自动录屏入口不调用相册选择或手动导入', (tester) async {
-    final methods = <String>[];
-    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
-      methods.add(call.method);
+      calls.add(call);
       if (call.method == 'list') return '[]';
-      if (call.method == 'startCapture') return null;
-      throw StateError('意外的平台请求：${call.method}');
+      if (call.method == 'import') return null;
+      throw StateError('意外的平台请求');
     });
     await tester.pumpWidget(const MaterialApp(home: StockHistoryPage()));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('开始自动录屏'));
+    expect(find.text('开始自动录屏'), findsNothing);
+    expect(find.byType(Slider), findsNothing);
+    await tester.tap(find.text('拼接录屏'));
     await tester.pumpAndSettle();
-    expect(methods, ['list', 'startCapture']);
+    expect(calls.map((call) => call.method).toList(), ['list', 'import']);
+    expect(calls.last.arguments, {'video': true});
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -213,10 +241,7 @@ void main() {
       return jsonEncode([record(), record()]);
     });
     await expectLater(StockHistoryStore().load(), throwsFormatException);
-    expect(
-      await StockHistoryStore().pick(video: true, top: .18, bottom: .1),
-      isNull,
-    );
+    expect(await StockHistoryStore().pick(video: true), isNull);
   });
 
   testWidgets('历史页面按品名搜索并明确显示读取失败', (tester) async {

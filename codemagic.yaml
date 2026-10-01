@@ -14,6 +14,16 @@ workflows:
         script: |
           flutter analyze
           flutter test
+      - name: Run iOS native regression tests
+        script: |
+          set -euo pipefail
+          flutter build ios --simulator --debug
+          simulator_id="$(xcrun simctl list devices available -j | ruby -rjson -e 'device = JSON.parse(STDIN.read).fetch("devices").values.flatten.find { |item| item.fetch("name").start_with?("iPhone") && item.fetch("isAvailable") }; abort "No available iPhone simulator" unless device; puts device.fetch("udid")')"
+          mkdir -p "$CM_BUILD_DIR/build/ios/test-results"
+          xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
+            -destination "platform=iOS Simulator,id=$simulator_id" -parallel-testing-enabled NO \
+            -resultBundlePath "$CM_BUILD_DIR/build/ios/test-results/RunnerTests.xcresult" \
+            CODE_SIGNING_ALLOWED=NO
       - name: Build iOS app and Shortcuts action
         script: flutter build ios --release --no-codesign
       - name: Package unsigned IPA
@@ -24,27 +34,14 @@ workflows:
           package_dir="$(mktemp -d)"
           trap 'rm -rf "$package_dir"' EXIT
           test ! -d "$app_path/PlugIns/StockKeyboard.appex"
-          test -d "$app_path/PlugIns/StockCapture.appex"
+          test ! -d "$app_path/PlugIns/StockCapture.appex"
           test -d "$app_path/Metadata.appintents"
           mkdir -p "$package_dir/Payload"
           cp -R "$app_path" "$package_dir/Payload/Runner.app"
-          # 附带请求权限供侧载工具重签读取；此临时签名不授予设备安装权限。
-          packaged_app="$package_dir/Payload/Runner.app"
-          find "$packaged_app" -depth \( -name '*.framework' -o -name '*.dylib' \) -print0 |
-            while IFS= read -r -d '' library; do
-              /usr/bin/codesign --force --sign - "$library"
-            done
-          /usr/bin/codesign --force --sign - --entitlements "$CM_BUILD_DIR/ios/StockCapture/StockCapture.entitlements" "$packaged_app/PlugIns/StockCapture.appex"
-          /usr/bin/codesign --force --sign - --entitlements "$CM_BUILD_DIR/ios/Runner/Runner.entitlements" "$packaged_app"
-          /usr/bin/codesign --display --entitlements :- "$packaged_app/PlugIns/StockCapture.appex" > "$package_dir/extension-entitlements.plist"
-          /usr/bin/codesign --display --entitlements :- "$packaged_app" > "$package_dir/app-entitlements.plist"
-          for target in app extension; do
-            actual_group="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$package_dir/$target-entitlements.plist")"
-            test "$actual_group" = "group.com.luckinstocktaking.shared"
-          done
           mkdir -p "$(dirname "$ipa_path")"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$package_dir/Payload" "$ipa_path"
           test -s "$ipa_path"
     artifacts:
       - build/ios/ipa/luckinstocktaking-unsigned.ipa
       - /tmp/xcodebuild_logs/*.log
+      - build/ios/test-results/*.xcresult

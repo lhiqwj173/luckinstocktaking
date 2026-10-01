@@ -4,8 +4,6 @@ import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 import Vision
-import ReplayKit
-import CoreFoundation
 
 enum StockHistoryError: LocalizedError {
   case invalid(String)
@@ -17,6 +15,61 @@ enum StockHistoryError: LocalizedError {
 struct StockTextLine: Codable {
   var cells: [String]
   var confidence: Double
+}
+
+struct StockOCRCell {
+  let text: String
+  let confidence: Double
+  let box: CGRect
+}
+
+enum StockTableParser {
+  static func rows(_ cells: [StockOCRCell]) throws -> [StockTextLine] {
+    let ordered = cells.sorted {
+      $0.box.midY == $1.box.midY ? $0.box.minX < $1.box.minX : $0.box.midY < $1.box.midY
+    }
+    func compact(_ text: String) -> String {
+      text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+    }
+    guard let nameHeader = ordered.first(where: { compact($0.text).contains("货物规格名称") }),
+      let stockHeader = ordered.first(where: {
+        compact($0.text).contains("实盘总库存") && abs($0.box.midY - nameHeader.box.midY) < 50
+      }), stockHeader.box.minX > nameHeader.box.maxX else {
+      throw StockHistoryError.invalid("未识别到「货物规格名称 / 实盘总库存」表头，请确认长图包含表头")
+    }
+    let boundary = stockHeader.box.minX
+    let top = max(nameHeader.box.maxY, stockHeader.box.maxY)
+    let footer = ordered.first(where: { cell in
+      cell.box.minY > top && ["预制物料信息", "其他信息", "历史记录"].contains(where: { compact(cell.text).contains($0) })
+    })?.box.minY ?? .greatestFiniteMagnitude
+    let body = ordered.filter { $0.box.midY > top && $0.box.midY < footer }
+    let left = body.filter { $0.box.minX < boundary && !compact($0.text).contains("货物规格名称") }
+    // O/I 与数字混淆只用于寻找行锚点，显示和保存时保留识别原文供校对。
+    let code = "[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}"
+    var names: [[StockOCRCell]] = []
+    var current: [StockOCRCell] = []
+    for cell in left {
+      current.append(cell)
+      if compact(cell.text).range(of: code, options: .regularExpression) != nil {
+        names.append(current)
+        current = []
+      }
+    }
+    guard !names.isEmpty, current.isEmpty else {
+      throw StockHistoryError.invalid("货物编码识别不完整，无法可靠划分货物行，请核对原始长图")
+    }
+    return try names.enumerated().map { index, parts in
+      let start = parts.map { $0.box.minY }.min()!
+      let end = index + 1 < names.count ? names[index + 1].map { $0.box.minY }.min()! : footer
+      let stocks = body.filter { $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end }
+      let inventory = stocks.map(\.text).joined(separator: "\n")
+      guard !stocks.isEmpty, inventory.range(of: "[0-9]", options: .regularExpression) != nil else {
+        throw StockHistoryError.invalid("第 \(index + 1) 项货物缺少可识别的库存数量，请核对原始长图")
+      }
+      return StockTextLine(cells: [parts.map(\.text).joined(separator: "\n"), inventory],
+        confidence: (parts + stocks).map(\.confidence).min()!)
+    }
+  }
 }
 
 struct StockHistoryDocument: Codable {
@@ -35,10 +88,11 @@ struct StockHistoryDocument: Codable {
   }
 
   func validate() throws {
-    guard schemaVersion == 1, UUID(uuidString: id) != nil,
+    guard (schemaVersion == 1 || schemaVersion == 2), UUID(uuidString: id) != nil,
           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           Self.date(createdAt) != nil,
           imageName == "\(id).png", !lines.isEmpty,
+          (schemaVersion != 2 || lines.allSatisfy { $0.cells.count == 2 }),
           lines.allSatisfy({ !$0.cells.isEmpty && $0.cells.allSatisfy {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
           } && $0.confidence.isFinite && (0...1).contains($0.confidence) }) else {
@@ -59,70 +113,7 @@ enum StockHistoryStorage {
   static let queue = DispatchQueue(label: "com.luckinstocktaking.history", qos: .userInitiated)
   static let readyNotification = Notification.Name("StockHistoryReady")
   static let pendingKey = "stockHistory.pendingDocumentID"
-  static let captureStartKey = "stockCapture.openStart"
-
-  static func consumeCapture(onProcessing: () -> Void = {}) throws -> StockHistoryDocument? {
-    let root = try StockCaptureSession.root()
-    let folders = try FileManager.default.contentsOfDirectory(at: root,
-      includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-      .filter { UUID(uuidString: $0.lastPathComponent) != nil }
-      .sorted { $0.lastPathComponent < $1.lastPathComponent }
-    for folder in folders {
-      let imported = folder.appendingPathComponent("imported.json")
-      if FileManager.default.fileExists(atPath: imported.path) { continue }
-      let failure = folder.appendingPathComponent("failure.json")
-      if FileManager.default.fileExists(atPath: failure.path) {
-        let message = try JSONDecoder().decode(String.self, from: Data(contentsOf: failure))
-        throw StockCaptureError.invalid("自动录屏失败：\(message)。可在旧盘点单页面清除失败会话后重试。")
-      }
-      let complete = folder.appendingPathComponent("completed.json")
-      let request = try JSONDecoder().decode(StockCaptureRequest.self,
-        from: Data(contentsOf: folder.appendingPathComponent("request.json")))
-      try request.validate()
-      guard request.id == folder.lastPathComponent else { throw StockCaptureError.invalid("录屏配置的会话标识不一致") }
-      if !FileManager.default.fileExists(atPath: complete.path) {
-        if FileManager.default.fileExists(atPath: folder.appendingPathComponent("recording").path),
-          Date().timeIntervalSince(request.createdAt) > 480 {
-          let error = StockCaptureError.invalid("录屏扩展异常退出，未收到完整结束数据，请清除失败会话后重录")
-          try StockCaptureSession.fail(error, id: request.id)
-          throw error
-        }
-        continue
-      }
-      let state = try JSONDecoder().decode(StockCaptureCompletion.self, from: Data(contentsOf: complete))
-      guard request.id == folder.lastPathComponent, state.id == request.id,
-        state.frames >= 2, state.duration.isFinite, state.duration > 0, state.duration <= 120 else {
-        throw StockCaptureError.invalid("自动录屏完成状态无效")
-      }
-      let record: StockHistoryDocument
-      onProcessing()
-      do {
-        let existing = try directory(request.id).appendingPathComponent("record.json")
-        if FileManager.default.fileExists(atPath: existing.path) {
-          record = try JSONDecoder().decode(StockHistoryDocument.self, from: Data(contentsOf: existing))
-          try record.validate()
-          guard record.id == request.id else { throw StockCaptureError.invalid("已导入的录屏记录标识不一致") }
-          _ = try image(record.id)
-        } else {
-          record = try StockHistoryProcessor.process(url: folder.appendingPathComponent("capture.mp4"),
-            video: true, crop: StockCrop(top: request.top, bottom: request.bottom), documentID: request.id)
-        }
-      } catch {
-        try StockCaptureSession.fail(error, id: request.id)
-        throw error
-      }
-      try JSONEncoder().encode(record.id).write(to: imported, options: .atomic)
-      UserDefaults.standard.set(record.id, forKey: pendingKey)
-      return record
-    }
-    return nil
-  }
-
-  static func pendingDocument(onProcessing: () -> Void = {}) throws -> String? {
-    // 手动文件快捷指令已生成的待校对记录应独立于录屏扩展权限。
-    if UserDefaults.standard.object(forKey: pendingKey) == nil {
-      _ = try consumeCapture(onProcessing: onProcessing)
-    }
+  static func pendingDocument() throws -> String? {
     guard let value = UserDefaults.standard.object(forKey: pendingKey) else { return nil }
     guard let id = value as? String else { throw StockHistoryError.invalid("待打开的盘点单标识损坏") }
     let record = try JSONDecoder().decode(StockHistoryDocument.self,
@@ -163,7 +154,7 @@ enum StockHistoryStorage {
     return json
   }
   static func create(image: UIImage, lines: [StockTextLine], id: String = UUID().uuidString) throws -> StockHistoryDocument {
-    let record = StockHistoryDocument(schemaVersion: 1, id: id,
+    let record = StockHistoryDocument(schemaVersion: 2, id: id,
       title: "旧盘点单 \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short))",
       createdAt: ISO8601DateFormatter().string(from: Date()), imageName: "\(id).png",
       lines: lines, reviewed: false)
@@ -203,6 +194,7 @@ enum StockHistoryStorage {
 }
 
 struct StockCrop {
+  static let automatic = StockCrop(top: 0.18, bottom: 0.10)
   let top: Double
   let bottom: Double
   func validate() throws {
@@ -444,8 +436,7 @@ enum StockHistoryProcessor {
   static func recognize(_ image: UIImage, progress: (String) -> Void = { _ in }) throws -> [StockTextLine] {
     guard let cg = image.cgImage else { throw StockHistoryError.invalid("无法读取截图像素") }
     let recognitionImage = try textImage(cg)
-    struct Cell { let text: String; let confidence: Double; let box: CGRect }
-    var cells: [Cell] = []
+    var cells: [StockOCRCell] = []
     // 对长图分块识别，用中心点归属消除块边缘重复；不按文本去重，保留真实重复行。
     let block = 1800
     let margin = 120
@@ -478,24 +469,13 @@ enum StockHistoryProcessor {
           if rect.midY >= Double(start) && rect.midY < Double(min(cg.height, start + block)) {
             let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { throw StockHistoryError.invalid("识别到空文字，请检查截图") }
-            cells.append(Cell(text: text, confidence: Double(candidate.confidence), box: rect))
+            cells.append(StockOCRCell(text: text, confidence: Double(candidate.confidence), box: rect))
           }
         }
       }
     }
-    cells.sort { $0.box.midY < $1.box.midY }
-    var groups: [[Cell]] = []
-    for cell in cells {
-      if let last = groups.last, let anchor = last.first,
-         abs(anchor.box.midY - cell.box.midY) < min(anchor.box.height, cell.box.height) * 0.45 {
-        groups[groups.count - 1].append(cell)
-      } else { groups.append([cell]) }
-    }
-    guard !groups.isEmpty else { throw StockHistoryError.invalid("没有识别到文字，请选择清晰的盘点单截图") }
-    return groups.map { group in
-      StockTextLine(cells: group.sorted { $0.box.minX < $1.box.minX }.map(\.text),
-        confidence: group.map(\.confidence).min()!)
-    }
+    return try StockTableParser.rows(cells)
+
   }
 }
 
@@ -503,9 +483,7 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
   private let channel: FlutterMethodChannel
   private var pending: FlutterResult?
   private var video = true
-  private var crop = StockCrop(top: 0.18, bottom: 0.10)
-  private var captureConfigured = false
-  private weak var captureStartView: StockCaptureStartView?
+  private var crop = StockCrop.automatic
   private var processingView: StockImportProgressView?
 
   init(messenger: FlutterBinaryMessenger) {
@@ -513,16 +491,6 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
     super.init()
     NotificationCenter.default.addObserver(self, selector: #selector(historyReady),
       name: StockHistoryStorage.readyNotification, object: nil)
-    NotificationCenter.default.addObserver(self, selector: #selector(hostInactive),
-      name: UIApplication.willResignActiveNotification, object: nil)
-    NotificationCenter.default.addObserver(self, selector: #selector(hostActive),
-      name: UIApplication.didBecomeActiveNotification, object: nil)
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-      Unmanaged.passUnretained(self).toOpaque(), { _, observer, _, _, _ in
-        guard let observer = observer else { preconditionFailure("录屏通知观察者缺失") }
-        let bridge = Unmanaged<StockHistoryBridge>.fromOpaque(observer).takeUnretainedValue()
-        DispatchQueue.main.async { bridge.historyReady() }
-      }, StockCaptureSession.notification as CFString, nil, .deliverImmediately)
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else {
         result(FlutterError(code: "HISTORY_UNAVAILABLE", message: "历史服务不可用", details: nil)); return
@@ -532,63 +500,19 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
   }
   deinit {
     NotificationCenter.default.removeObserver(self)
-    CFNotificationCenterRemoveEveryObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-      Unmanaged.passUnretained(self).toOpaque())
+
   }
   @objc private func historyReady() {
     guard UIApplication.shared.applicationState == .active else { return }
     channel.invokeMethod("historyReady", arguments: nil)
   }
-  private func hostState(_ active: Bool) {
-    guard captureConfigured else { return }
-    do { try StockCaptureSession.setHostForeground(active) }
-    catch { channel.invokeMethod("captureError", arguments: error.localizedDescription) }
-  }
-  @objc private func hostInactive() { hostState(false) }
-  @objc private func hostActive() { hostState(true) }
-
-  private func presentCapture(top: Double, bottom: Double) throws {
-    guard let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
-      var presenter = scene.windows.first(where: \.isKeyWindow)?.rootViewController else {
-      throw StockCaptureError.invalid("无法显示系统录屏入口")
-    }
-    while let next = presenter.presentedViewController { presenter = next }
-    let extensionID = try StockCaptureSession.broadcastExtensionID()
-    _ = try StockCaptureSession.prepare(top: top, bottom: bottom)
-    captureConfigured = true
-    let controller = StockCaptureStartView(extensionID: extensionID)
-    captureStartView = controller
-    presenter.present(controller, animated: true)
-  }
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    if call.method == "startCapture" {
-      do {
-        guard let args = call.arguments as? [String: Any], let top = args["top"] as? Double,
-          let bottom = args["bottom"] as? Double else { throw StockCaptureError.invalid("录屏配置缺失") }
-        try presentCapture(top: top, bottom: bottom)
-        result(nil)
-      } catch { Self.fail(error, result: result) }
-      return
-    }
-    if call.method == "pendingStart" {
-      do {
-        if let json = UserDefaults.standard.object(forKey: StockHistoryStorage.captureStartKey) {
-          guard let json = json as? String else { throw StockCaptureError.invalid("录屏启动配置损坏") }
-          let request = try JSONDecoder().decode(StockCaptureRequest.self, from: Data(json.utf8))
-          try presentCapture(top: request.top, bottom: request.bottom)
-          UserDefaults.standard.removeObject(forKey: StockHistoryStorage.captureStartKey)
-        }
-        result(nil)
-      } catch { Self.fail(error, result: result) }
-      return
-    }
     if call.method == "import" {
       guard pending == nil, let arguments = call.arguments as? [String: Any],
-        let video = arguments["video"] as? Bool,
-        let top = arguments["top"] as? Double, let bottom = arguments["bottom"] as? Double else {
+        let video = arguments["video"] as? Bool else {
         result(FlutterError(code: "INVALID_IMPORT", message: "导入参数无效或已有导入任务", details: nil)); return
       }
-      let crop = StockCrop(top: top, bottom: bottom)
+      let crop = StockCrop.automatic
       do { try crop.validate() } catch { Self.fail(error, result: result); return }
       guard let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
         var presenter = scene.windows.first(where: \.isKeyWindow)?.rootViewController else {
@@ -608,18 +532,28 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
       do {
         let value: Any?
         switch call.method {
-        case "clearCaptureFailures":
-          let root = try StockCaptureSession.root()
-          let folders = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-          for folder in folders where UUID(uuidString: folder.lastPathComponent) != nil {
-            if FileManager.default.fileExists(atPath: folder.appendingPathComponent("failure.json").path) {
-              try FileManager.default.removeItem(at: folder)
+        case "pending": value = try StockHistoryStorage.pendingDocument()
+        case "table":
+          guard let id = call.arguments as? String else { throw StockHistoryError.invalid("盘点单标识缺失") }
+          let url = try StockHistoryStorage.directory(id).appendingPathComponent("record.json")
+          let original = try JSONDecoder().decode(StockHistoryDocument.self, from: Data(contentsOf: url))
+          try original.validate()
+          guard original.id == id else { throw StockHistoryError.invalid("盘点单标识不一致") }
+          if original.schemaVersion == 2 { value = try original.json() }
+          else {
+            guard let image = UIImage(data: try StockHistoryStorage.image(id)) else {
+              throw StockHistoryError.invalid("历史长图无法读取")
             }
+            let rows = try StockHistoryProcessor.recognize(image)
+            let table = StockHistoryDocument(schemaVersion: 2, id: original.id, title: original.title,
+              createdAt: original.createdAt, imageName: original.imageName, lines: rows, reviewed: false)
+            let backup = url.deletingLastPathComponent().appendingPathComponent("legacy-recognized-lines.json")
+            if !FileManager.default.fileExists(atPath: backup.path) {
+              try JSONEncoder().encode(original).write(to: backup, options: .atomic)
+            }
+            try StockHistoryStorage.save(table.json())
+            value = try table.json()
           }
-          value = nil
-        case "pending": value = try StockHistoryStorage.pendingDocument {
-          DispatchQueue.main.async { self.captureStartView?.showProcessing() }
-        }
         case "list": value = try StockHistoryStorage.list()
         case "save":
           guard let json = call.arguments as? String else { throw StockHistoryError.invalid("盘点单必须为 JSON 文本") }
@@ -630,12 +564,7 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
         default: value = FlutterMethodNotImplemented
         }
         DispatchQueue.main.async {
-          if call.method == "pending", value != nil {
-            self.captureStartView?.dismiss(animated: false)
-            self.captureStartView = nil
-          }
           result(value)
-          if call.method == "clearCaptureFailures" { self.historyReady() }
         }
       } catch { DispatchQueue.main.async { Self.fail(error, result: result) } }
     }
@@ -662,29 +591,10 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
             .appendingPathExtension(url.pathExtension)
           try FileManager.default.copyItem(at: url, to: local)
           DispatchQueue.main.async {
-            if self.video { self.preview(local) } else { self.process(local) }
+            self.process(local)
           }
         } catch { DispatchQueue.main.async { self.finish(nil, error: error) } }
       }
-    }
-  }
-  private func preview(_ url: URL) {
-    StockHistoryStorage.queue.async {
-      do {
-        let (generator, _) = try StockHistoryProcessor.makeGenerator(url: url)
-        let cg = try generator.copyCGImage(at: .zero, actualTime: nil)
-        DispatchQueue.main.async {
-          guard let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
-            let presenter = scene.windows.first(where: \.isKeyWindow)?.rootViewController else {
-            self.cleanup(url, value: nil, error: StockHistoryError.invalid("无法显示录屏预览")); return
-          }
-          let preview = StockCropPreview(image: UIImage(cgImage: cg), crop: self.crop) { selected in
-            if let selected = selected { self.crop = selected; self.process(url) }
-            else { self.cleanup(url, value: nil) }
-          }
-          presenter.present(preview, animated: true)
-        }
-      } catch { DispatchQueue.main.async { self.cleanup(url, value: nil, error: error) } }
     }
   }
   private func process(_ url: URL) {
@@ -741,109 +651,5 @@ final class StockImportProgressView: UIViewController {
       stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
       stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
     ])
-  }
-}
-
-final class StockCaptureStartView: UIViewController {
-  private let label = UILabel()
-  private let extensionID: String
-  init(extensionID: String) {
-    self.extensionID = extensionID
-    super.init(nibName: nil, bundle: nil)
-  }
-  required init?(coder: NSCoder) { fatalError("不支持 storyboard 初始化") }
-  func showProcessing() {
-    label.text = "录屏已接收\n\n正在拼接长截图、识别文字并保存历史。\n请保持助手打开，完成后自动显示结果。"
-  }
-  override func viewDidLoad() {
-    super.viewDidLoad()
-    view.backgroundColor = .systemBackground
-    label.text = "读取旧盘点单\n\n点击下方系统录屏按钮，并确认「开始直播」。\n随后切回瑞幸盘，从单据顶部缓慢滚动到底。\n\n结束系统录屏后返回助手，自动拼接、识别并保存历史。\n录屏仅保存在本机，不上传、不保存音轨。"
-    label.numberOfLines = 0; label.textAlignment = .center
-    let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 80, height: 80))
-    picker.preferredExtension = extensionID
-    picker.showsMicrophoneButton = false
-    let close = UIButton(type: .system)
-    close.setTitle("返回助手", for: .normal)
-    close.addTarget(self, action: #selector(closeView), for: .touchUpInside)
-    let stack = UIStackView(arrangedSubviews: [label, picker, close])
-    stack.axis = .vertical; stack.alignment = .center; stack.spacing = 28
-    stack.translatesAutoresizingMaskIntoConstraints = false
-    view.addSubview(stack)
-    NSLayoutConstraint.activate([
-      stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-      stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
-      stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
-      label.widthAnchor.constraint(equalTo: stack.widthAnchor),
-      picker.widthAnchor.constraint(equalToConstant: 80), picker.heightAnchor.constraint(equalToConstant: 80),
-    ])
-  }
-  @objc private func closeView() { dismiss(animated: true) }
-}
-
-final class StockCropPreview: UIViewController {
-  private let image: UIImage
-  private let top = UISlider()
-  private let bottom = UISlider()
-  private let picture = UIImageView()
-  private let label = UILabel()
-  private let completion: (StockCrop?) -> Void
-  init(image: UIImage, crop: StockCrop, completion: @escaping (StockCrop?) -> Void) {
-    self.image = image; self.completion = completion
-    super.init(nibName: nil, bundle: nil)
-    top.maximumValue = 0.4; bottom.maximumValue = 0.3
-    top.value = Float(crop.top); bottom.value = Float(crop.bottom)
-    isModalInPresentation = true
-    modalPresentationStyle = .fullScreen
-  }
-  required init?(coder: NSCoder) { fatalError("不支持 storyboard 初始化") }
-  override func viewDidLoad() {
-    super.viewDidLoad()
-    view.backgroundColor = .systemBackground
-    label.numberOfLines = 0; label.textAlignment = .center
-    label.setContentCompressionResistancePriority(.required, for: .vertical)
-    picture.contentMode = .scaleAspectFit
-    picture.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-    picture.setContentHuggingPriority(.defaultLow, for: .vertical)
-    top.addTarget(self, action: #selector(update), for: .valueChanged)
-    bottom.addTarget(self, action: #selector(update), for: .valueChanged)
-    let accept = UIButton(type: .system)
-    accept.setTitle("范围正确，开始拼接", for: .normal)
-    accept.addTarget(self, action: #selector(confirm), for: .touchUpInside)
-    let cancel = UIButton(type: .system)
-    cancel.setTitle("取消", for: .normal)
-    cancel.addTarget(self, action: #selector(close), for: .touchUpInside)
-    let stack = UIStackView(arrangedSubviews: [label, picture, top, bottom, accept, cancel])
-    stack.axis = .vertical; stack.spacing = 12; stack.translatesAutoresizingMaskIntoConstraints = false
-    view.addSubview(stack)
-    NSLayoutConstraint.activate([
-      stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
-      stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
-      stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-      stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-      picture.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
-      top.heightAnchor.constraint(equalToConstant: 32),
-      bottom.heightAnchor.constraint(equalToConstant: 32),
-      accept.heightAnchor.constraint(equalToConstant: 48),
-      cancel.heightAnchor.constraint(equalToConstant: 44),
-    ])
-    update()
-  }
-  @objc private func update() {
-    let crop = StockCrop(top: Double(top.value), bottom: Double(bottom.value))
-    label.text = "仅保留滚动内容，排除固定导航和底栏\n顶部 \(Int(top.value * 100))% · 底部 \(Int(bottom.value * 100))%"
-    do {
-      guard let cg = image.cgImage else { throw StockHistoryError.invalid("预览图片无效") }
-      picture.image = UIImage(cgImage: try crop.apply(cg))
-    } catch { preconditionFailure(error.localizedDescription) }
-  }
-  @objc private func confirm() {
-    view.isUserInteractionEnabled = false
-    let crop = StockCrop(top: Double(top.value), bottom: Double(bottom.value))
-    dismiss(animated: true) { self.completion(crop) }
-  }
-  @objc private func close() {
-    view.isUserInteractionEnabled = false
-    dismiss(animated: true) { self.completion(nil) }
   }
 }

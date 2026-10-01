@@ -32,6 +32,7 @@ class StockDocument {
     required this.imageName,
     required this.lines,
     required this.reviewed,
+    this.schemaVersion = 1,
   });
   final String id;
   final String title;
@@ -39,9 +40,10 @@ class StockDocument {
   final String imageName;
   final List<StockLine> lines;
   final bool reviewed;
+  final int schemaVersion;
 
   factory StockDocument.fromJson(Map<String, dynamic> json) {
-    if (json['schemaVersion'] != 1) {
+    if (json['schemaVersion'] != 1 && json['schemaVersion'] != 2) {
       throw const FormatException('不支持的盘点单数据版本');
     }
     final document = StockDocument(
@@ -55,13 +57,15 @@ class StockDocument {
           )
           .toList(),
       reviewed: json['reviewed'] as bool,
+      schemaVersion: json['schemaVersion'] as int,
     );
     document.validate();
     return document;
   }
 
   void validate() {
-    if (!RegExp(
+    if ((schemaVersion != 1 && schemaVersion != 2) ||
+        !RegExp(
           r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
         ).hasMatch(id) ||
         title.trim().isEmpty ||
@@ -71,6 +75,9 @@ class StockDocument {
     }
     for (final line in lines) {
       StockLine.fromJson(line.toJson());
+      if (schemaVersion == 2 && line.cells.length != 2) {
+        throw const FormatException('盘点表必须包含货物规格名称和实盘总库存两列');
+      }
     }
   }
 
@@ -81,6 +88,7 @@ class StockDocument {
     imageName: imageName,
     lines: lines,
     reviewed: true,
+    schemaVersion: schemaVersion,
   );
 
   bool matches(String query) {
@@ -91,7 +99,7 @@ class StockDocument {
   }
 
   Map<String, dynamic> toJson() => {
-    'schemaVersion': 1,
+    'schemaVersion': schemaVersion,
     'id': id,
     'title': title,
     'createdAt': createdAt.toUtc().toIso8601String(),
@@ -104,22 +112,17 @@ class StockDocument {
 class StockHistoryStore {
   static const channel = MethodChannel('com.luckinstocktaking/history');
   static final changes = ValueNotifier<int>(0);
-  Future<void> startCapture({
-    required double top,
-    required double bottom,
-  }) async {
-    await channel.invokeMethod<void>('startCapture', {
-      'top': top,
-      'bottom': bottom,
-    });
-  }
-
-  Future<void> openPendingCapture() async {
-    await channel.invokeMethod<void>('pendingStart');
-  }
-
-  Future<void> clearCaptureFailures() async {
-    await channel.invokeMethod<void>('clearCaptureFailures');
+  Future<StockDocument> table(StockDocument document) async {
+    if (document.schemaVersion == 2) return document;
+    final json = await channel.invokeMethod<String>('table', document.id);
+    if (json == null) throw StateError('无法整理盘点表');
+    final result = StockDocument.fromJson(
+      (jsonDecode(json) as Map).cast<String, dynamic>(),
+    );
+    if (result.id != document.id || result.schemaVersion != 2) {
+      throw const FormatException('整理后的盘点表标识或版本无效');
+    }
+    return result;
   }
 
   Future<StockDocument?> pending() async {
@@ -147,16 +150,8 @@ class StockHistoryStore {
     return documents;
   }
 
-  Future<StockDocument?> pick({
-    required bool video,
-    required double top,
-    required double bottom,
-  }) async {
-    final json = await channel.invokeMethod<String>('import', {
-      'video': video,
-      'top': top,
-      'bottom': bottom,
-    });
+  Future<StockDocument?> pick({required bool video}) async {
+    final json = await channel.invokeMethod<String>('import', {'video': video});
     // 空值只代表用户主动取消系统选择器。
     if (json == null) return null;
     return StockDocument.fromJson(

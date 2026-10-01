@@ -21,7 +21,7 @@ private enum StocktakingError: LocalizedError {
 }
 
 @available(iOS 16.0, *)
-private struct IntentCategory: Decodable {
+struct IntentCategory: Decodable {
   enum WeighingType: String, Decodable {
     case portionBox
     case openedClip
@@ -95,11 +95,12 @@ private struct IntentCategory: Decodable {
       throw StocktakingError.invalidCatalog
     }
     let net = weight - tare
-    guard net >= 0, allowMultiple || net <= singleServingGrams else {
+    guard net >= 0 else {
       throw StocktakingError.invalidWeight(
-        allowMultiple ? "\(tare) 克以上" : "\(tare)～\(tare + singleServingGrams) 克"
+        "\(tare) 克以上"
       )
     }
+    if !allowMultiple && net >= singleServingGrams { return "\(name)：0.9 份" }
     let scaled = net / singleServingGrams * 10 + 0.5
     guard scaled.isFinite, scaled < Double(Int.max) else {
       throw StocktakingError.invalidNumber
@@ -194,7 +195,7 @@ struct CalculateStockIntent: AppIntent {
 
 @available(iOS 16.0, *)
 struct ReadOldStockIntent: AppIntent {
-  static var title: LocalizedStringResource { "读取旧盘点单" }
+  static var title: LocalizedStringResource { "拼接盘点单录屏" }
   static var description = IntentDescription("将系统录屏拼成长截图并识别文字，保存为待校对历史；也支持直接传入截图。")
   static var openAppWhenRun: Bool { true }
 
@@ -203,13 +204,9 @@ struct ReadOldStockIntent: AppIntent {
   var file: IntentFile
   @Parameter(title: "录屏视频", default: true)
   var video: Bool
-  @Parameter(title: "顶部裁剪比例", default: 0.18)
-  var top: Double
-  @Parameter(title: "底部裁剪比例", default: 0.10)
-  var bottom: Double
 
   func perform() async throws -> some IntentResult & ReturnsValue<String> {
-    let crop = StockCrop(top: top, bottom: bottom)
+    let crop = StockCrop.automatic
     try crop.validate()
     let local = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
       .appendingPathExtension(video ? "mov" : "png")
@@ -237,30 +234,6 @@ struct ReadOldStockIntent: AppIntent {
         }
       }
     }
-    return .result(value: "已保存 \(document.lines.count) 行文字，请在「旧盘点单」中校对：\(document.title)")
-  }
-}
-
-@available(iOS 16.0, *)
-struct StartOldStockCaptureIntent: AppIntent {
-  static var title: LocalizedStringResource { "开始读取旧盘点单" }
-  static var description = IntentDescription("打开盘点单专用系统录屏入口。确认开始后切回瑞幸盘；结束后返回助手自动处理，无需选择视频。")
-  static var openAppWhenRun: Bool { true }
-  @Parameter(title: "顶部裁剪比例", default: 0.18)
-  var top: Double
-  @Parameter(title: "底部裁剪比例", default: 0.10)
-  var bottom: Double
-
-  func perform() async throws -> some IntentResult {
-    let request = StockCaptureRequest(id: UUID().uuidString, createdAt: Date(), top: top, bottom: bottom)
-    try request.validate()
-    guard let json = String(data: try JSONEncoder().encode(request), encoding: .utf8) else {
-      throw StockCaptureError.invalid("无法编码录屏启动配置")
-    }
-    UserDefaults.standard.set(json, forKey: StockHistoryStorage.captureStartKey)
-    await MainActor.run {
-      NotificationCenter.default.post(name: StockHistoryStorage.readyNotification, object: nil)
-    }
-    return .result()
+    return .result(value: "已保存 \(document.lines.count) 项货物，请在「旧盘点单」中校对：\(document.title)")
   }
 }

@@ -48,9 +48,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     StockHistoryStore.channel.setMethodCallHandler((call) async {
       if (call.method == 'historyReady') await _openPendingHistory();
-      if (call.method == 'captureError') {
-        if (mounted) setState(() => _error = call.arguments as String);
-      }
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingHistory());
     _load();
@@ -68,7 +65,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() => _openingHistory = true);
     StockDocument? document;
     try {
-      await StockHistoryStore().openPendingCapture();
       document = await StockHistoryStore().pending();
     } on PlatformException catch (error) {
       if (mounted) setState(() => _error = error.message ?? error.code);
@@ -367,7 +363,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                           SizedBox(width: 12),
-                          Expanded(child: Text('正在接收录屏并自动处理盘点单，请保持助手打开…')),
+                          Expanded(child: Text('正在打开已处理的盘点单，请稍候…')),
                         ],
                       ),
                     ),
