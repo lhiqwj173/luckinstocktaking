@@ -46,6 +46,14 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(try a.displacement(to: a), 0)
     XCTAssertEqual(try a.displacement(to: b), 120)
     XCTAssertEqual(try b.displacement(to: a), -120)
+    XCTAssertLessThan(a.error(with: b, shift: 120), a.error(with: b, shift: 117))
+    XCTAssertLessThan(a.error(with: b, shift: 120), a.error(with: b, shift: 123))
+    for offset in [119, 121, 137] {
+      let shifted = try StockGrayFrame(source.cropping(to:
+        CGRect(x: 0, y: offset, width: 192, height: 600))!)
+      XCTAssertEqual(try a.displacement(to: shifted), offset)
+      XCTAssertEqual(try shifted.displacement(to: a), -offset)
+    }
   }
 
   func testBacktrackingDoesNotDuplicateDocumentRows() throws {

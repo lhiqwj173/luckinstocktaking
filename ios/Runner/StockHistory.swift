@@ -254,7 +254,9 @@ struct StockGrayFrame {
     let start = max(0, -shift)
     let end = min(height, height - shift)
     var sum = 0.0; var count = 0
-    for y in stride(from: start + 3, to: end - 3, by: 6) {
+    // 粗匹配稀疏采样；精匹配逐行比较，避免采样周期让不同位移得到相同误差。
+    let rowStride = smoothed ? 6 : 1
+    for y in stride(from: start + 3, to: end - 3, by: rowStride) {
       for x in stride(from: 8, to: width - 8, by: 4) {
         let a = Int(aPixels[(y + shift) * width + x])
         let b = Int(bPixels[y * width + x])
