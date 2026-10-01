@@ -199,7 +199,8 @@ struct ReadOldStockIntent: AppIntent {
   static var description = IntentDescription("将系统录屏拼成长截图并识别文字，保存为待校对历史；也支持直接传入截图。")
   static var openAppWhenRun: Bool { true }
 
-  @Parameter(title: "盘点单文件", supportedContentTypes: [.movie, .image])
+  // supportedContentTypes 的文件参数初始化方法要求 iOS 18；此快捷指令兼容 iOS 16。
+  @Parameter(title: "盘点单文件", supportedTypeIdentifiers: [UTType.movie.identifier, UTType.image.identifier])
   var file: IntentFile
   @Parameter(title: "录屏视频", default: true)
   var video: Bool
