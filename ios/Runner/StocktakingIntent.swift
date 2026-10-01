@@ -1,6 +1,5 @@
 import AppIntents
 import Foundation
-import UniformTypeIdentifiers
 
 @available(iOS 16.0, *)
 private enum StocktakingError: LocalizedError {
@@ -200,7 +199,7 @@ struct ReadOldStockIntent: AppIntent {
   static var openAppWhenRun: Bool { true }
 
   // supportedContentTypes 的文件参数初始化方法要求 iOS 18；此快捷指令兼容 iOS 16。
-  @Parameter(title: "盘点单文件", supportedTypeIdentifiers: [UTType.movie.identifier, UTType.image.identifier])
+  @Parameter(title: "盘点单文件", supportedTypeIdentifiers: ["public.movie", "public.image"])
   var file: IntentFile
   @Parameter(title: "录屏视频", default: true)
   var video: Bool
