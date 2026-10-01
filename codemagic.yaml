@@ -24,6 +24,7 @@ workflows:
           package_dir="$(mktemp -d)"
           trap 'rm -rf "$package_dir"' EXIT
           test ! -d "$app_path/PlugIns/StockKeyboard.appex"
+          test -d "$app_path/PlugIns/StockCapture.appex"
           test -d "$app_path/Metadata.appintents"
           mkdir -p "$package_dir/Payload"
           cp -R "$app_path" "$package_dir/Payload/Runner.app"

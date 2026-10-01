@@ -5,6 +5,8 @@ import 'category.dart';
 import 'catalog_store.dart';
 import 'catalog_tsv.dart';
 import 'shortcut_guide.dart';
+import 'stock_history_page.dart';
+import 'stock_history.dart';
 
 void main() => runApp(const StocktakingApp());
 
@@ -28,7 +30,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final _store = CatalogStore();
   final _query = TextEditingController();
   final _weight = TextEditingController();
@@ -38,13 +40,52 @@ class _HomePageState extends State<HomePage> {
   String? _result;
   String? _error;
   bool _loading = true;
+  bool _openingHistory = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    StockHistoryStore.channel.setMethodCallHandler((call) async {
+      if (call.method == 'historyReady') await _openPendingHistory();
+      if (call.method == 'captureError') {
+        if (mounted) setState(() => _error = call.arguments as String);
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingHistory());
     _load();
     _query.addListener(_queryChanged);
     _weight.addListener(_weightChanged);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _openPendingHistory();
+  }
+
+  Future<void> _openPendingHistory() async {
+    if (_openingHistory || !mounted) return;
+    setState(() => _openingHistory = true);
+    StockDocument? document;
+    try {
+      await StockHistoryStore().openPendingCapture();
+      document = await StockHistoryStore().pending();
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _error = error.message ?? error.code);
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } finally {
+      if (mounted) setState(() => _openingHistory = false);
+    }
+    if (document != null && mounted) {
+      final selected = document;
+      await Navigator.of(context).push<StockDocument>(
+        MaterialPageRoute(
+          builder: (_) => StockDocumentPage(document: selected),
+        ),
+      );
+      StockHistoryStore.changes.value++;
+    }
   }
 
   Future<void> _load() async {
@@ -286,6 +327,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    StockHistoryStore.channel.setMethodCallHandler(null);
     _query.dispose();
     _weight.dispose();
     super.dispose();
@@ -295,12 +338,53 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final matches = findCategories(_categories, _query.text);
     return Scaffold(
-      appBar: AppBar(title: const Text('称重盘点助手')),
+      appBar: AppBar(
+        title: const Text('称重盘点助手'),
+        actions: [
+          IconButton(
+            tooltip: '旧盘点单',
+            icon: const Icon(Icons.receipt_long_outlined),
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const StockHistoryPage())),
+          ),
+        ],
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                if (_openingHistory)
+                  const Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          SizedBox(width: 12),
+                          Expanded(child: Text('正在接收录屏并自动处理盘点单，请保持助手打开…')),
+                        ],
+                      ),
+                    ),
+                  ),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.history),
+                    title: const Text('读取旧盘点单'),
+                    subtitle: const Text('录屏智能拼接 · 截图识别 · 搜索历史'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const StockHistoryPage(),
+                      ),
+                    ),
+                  ),
+                ),
                 if (_diagnostics != null)
                   Card(
                     child: Padding(

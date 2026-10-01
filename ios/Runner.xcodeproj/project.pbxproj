@@ -7,6 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C30000000000000000000001 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000002; };
+		C30000000000000000000003 /* StockCaptureSession.swift in Runner Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000004; };
+		C30000000000000000000005 /* StockCaptureSession.swift in Extension Sources */ = {isa = PBXBuildFile; fileRef = C30000000000000000000004; };
+		C30000000000000000000006 /* StockCapture.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = C30000000000000000000007; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B20000000000000000000001 /* StockHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* StockHistory.swift */; };
 		A10000000000000000000001 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* KeyboardViewController.swift */; };
 		A10000000000000000000003 /* StockKeyboard.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* StockKeyboard.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
@@ -21,6 +26,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		C30000000000000000000008 = {isa = PBXContainerItemProxy; containerPortal = 97C146E61CF9000F007C117D; proxyType = 1; remoteGlobalIDString = C30000000000000000000009; remoteInfo = StockCapture; };
 		A10000000000000000000005 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = 97C146E61CF9000F007C117D /* Project object */; proxyType = 1; remoteGlobalIDString = A10000000000000000000006; remoteInfo = StockKeyboard; };
 		331C8085294A63A400263BE5 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -32,6 +38,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		C3000000000000000000000A /* Embed Stock Capture */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (C30000000000000000000006, ); name = "Embed Stock Capture"; runOnlyForDeploymentPostprocessing = 0; };
 		A10000000000000000000007 /* Embed App Extensions */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (A10000000000000000000003 /* StockKeyboard.appex in Embed App Extensions */, ); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
 		9705A1C41CF9048500538489 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -46,6 +53,12 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		C30000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleHandler.swift; sourceTree = "<group>"; };
+		C30000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockCaptureSession.swift; sourceTree = "<group>"; };
+		C30000000000000000000007 = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = StockCapture.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C3000000000000000000000B = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		C3000000000000000000000C = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = StockCapture.entitlements; sourceTree = "<group>"; };
+		B20000000000000000000002 /* StockHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StockHistory.swift; sourceTree = "<group>"; };
 		A10000000000000000000002 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
 		A10000000000000000000004 /* StockKeyboard.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = StockKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000008 /* StockKeyboard Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -71,6 +84,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		C3000000000000000000000D = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A1000000000000000000000B /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
 		97C146EB1CF9000F007C117D /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
@@ -82,6 +96,8 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		C3000000000000000000000E = {isa = PBXGroup; children = (C30000000000000000000002, C3000000000000000000000B, C3000000000000000000000C, ); path = StockCapture; sourceTree = "<group>"; };
+		C3000000000000000000000F = {isa = PBXGroup; children = (C30000000000000000000004, ); path = Shared; sourceTree = "<group>"; };
 		A1000000000000000000000C /* StockKeyboard */ = {isa = PBXGroup; children = (A10000000000000000000002 /* KeyboardViewController.swift */, A10000000000000000000008 /* StockKeyboard Info.plist */, A10000000000000000000009 /* StockKeyboard.entitlements */, ); path = StockKeyboard; sourceTree = "<group>"; };
 		331C8082294A63A400263BE5 /* RunnerTests */ = {
 			isa = PBXGroup;
@@ -105,6 +121,8 @@
 		97C146E51CF9000F007C117D = {
 			isa = PBXGroup;
 			children = (
+				C3000000000000000000000E,
+				C3000000000000000000000F,
 				A1000000000000000000000C /* StockKeyboard */,
 				9740EEB11CF90186004384FC /* Flutter */,
 				97C146F01CF9000F007C117D /* Runner */,
@@ -116,6 +134,7 @@
 		97C146EF1CF9000F007C117D /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				C30000000000000000000007,
 				A10000000000000000000004 /* StockKeyboard.appex */,
 				97C146EE1CF9000F007C117D /* Runner.app */,
 				331C8081294A63A400263BE5 /* RunnerTests.xctest */,
@@ -126,6 +145,7 @@
 		97C146F01CF9000F007C117D /* Runner */ = {
 			isa = PBXGroup;
 			children = (
+				B20000000000000000000002 /* StockHistory.swift */,
 				A1000000000000000000000A /* Runner.entitlements */,
 				97C146FA1CF9000F007C117D /* Main.storyboard */,
 				97C146FD1CF9000F007C117D /* Assets.xcassets */,
@@ -144,6 +164,7 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		C30000000000000000000009 /* StockCapture */ = {isa = PBXNativeTarget; buildConfigurationList = C30000000000000000000010; buildPhases = (C30000000000000000000011, C3000000000000000000000D, C30000000000000000000012, ); buildRules = (); dependencies = (); name = StockCapture; productName = StockCapture; productReference = C30000000000000000000007; productType = "com.apple.product-type.app-extension"; };
 		A10000000000000000000006 /* StockKeyboard */ = {isa = PBXNativeTarget; buildConfigurationList = A1000000000000000000000D /* Build configuration list for PBXNativeTarget "StockKeyboard" */; buildPhases = (A1000000000000000000000E /* Sources */, A1000000000000000000000B /* Frameworks */, A1000000000000000000000F /* Resources */, ); buildRules = ( ); dependencies = ( ); name = StockKeyboard; productName = StockKeyboard; productReference = A10000000000000000000004 /* StockKeyboard.appex */; productType = "com.apple.product-type.app-extension"; };
 		331C8080294A63A400263BE5 /* RunnerTests */ = {
 			isa = PBXNativeTarget;
@@ -166,6 +187,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 97C147051CF9000F007C117D /* Build configuration list for PBXNativeTarget "Runner" */;
 			buildPhases = (
+				C3000000000000000000000A,
 				9740EEB61CF901F6004384FC /* Run Script */,
 				97C146EA1CF9000F007C117D /* Sources */,
 				97C146EB1CF9000F007C117D /* Frameworks */,
@@ -176,6 +198,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				C30000000000000000000013,
 			);
 			name = Runner;
 			productName = Runner;
@@ -192,6 +215,7 @@
 				LastUpgradeCheck = 1510;
 				ORGANIZATIONNAME = "";
 				TargetAttributes = {
+					C30000000000000000000009 = {CreatedOnToolsVersion = 16.0; SystemCapabilities = {com.apple.ApplicationGroups.iOS = {enabled = 1; }; }; };
 					A10000000000000000000006 = {CreatedOnToolsVersion = 16.0; LastSwiftMigration = 1500; };
 					331C8080294A63A400263BE5 = {
 						CreatedOnToolsVersion = 14.0;
@@ -216,6 +240,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				C30000000000000000000009,
 				97C146ED1CF9000F007C117D /* Runner */,
 				A10000000000000000000006 /* StockKeyboard */,
 				331C8080294A63A400263BE5 /* RunnerTests */,
@@ -224,6 +249,7 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		C30000000000000000000012 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A1000000000000000000000F /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
 		331C807F294A63A400263BE5 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
@@ -280,6 +306,7 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		C30000000000000000000011 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C30000000000000000000001, C30000000000000000000005, ); runOnlyForDeploymentPostprocessing = 0; };
 		A1000000000000000000000E /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001 /* KeyboardViewController.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 		331C807D294A63A400263BE5 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -293,6 +320,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C30000000000000000000003,
+				B20000000000000000000001 /* StockHistory.swift in Sources */,
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				A10000000000000000000014 /* StocktakingIntent.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
@@ -303,6 +332,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		C30000000000000000000013 = {isa = PBXTargetDependency; target = C30000000000000000000009; targetProxy = C30000000000000000000008; };
 		A10000000000000000000010 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A10000000000000000000006 /* StockKeyboard */; targetProxy = A10000000000000000000005 /* PBXContainerItemProxy */; };
 		331C8086294A63A400263BE5 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -331,6 +361,9 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
+		C30000000000000000000014 = {isa = XCBuildConfiguration; baseConfigurationReference = 9740EEB21CF90195004384FC; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_ENTITLEMENTS = StockCapture/StockCapture.entitlements; CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)"; INFOPLIST_FILE = StockCapture/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)"; PRODUCT_BUNDLE_IDENTIFIER = com.luckinstocktaking.luckinstocktaking.StockCapture; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SKIP_INSTALL = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+		C30000000000000000000015 = {isa = XCBuildConfiguration; baseConfigurationReference = 7AFA3C8E1D35360C0083082E; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_ENTITLEMENTS = StockCapture/StockCapture.entitlements; CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)"; INFOPLIST_FILE = StockCapture/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)"; PRODUCT_BUNDLE_IDENTIFIER = com.luckinstocktaking.luckinstocktaking.StockCapture; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+		C30000000000000000000016 = {isa = XCBuildConfiguration; baseConfigurationReference = 7AFA3C8E1D35360C0083082E; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_ENTITLEMENTS = StockCapture/StockCapture.entitlements; CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)"; INFOPLIST_FILE = StockCapture/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)"; PRODUCT_BUNDLE_IDENTIFIER = com.luckinstocktaking.luckinstocktaking.StockCapture; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Profile; };
 		A10000000000000000000011 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_ENTITLEMENTS = StockKeyboard/StockKeyboard.entitlements; CURRENT_PROJECT_VERSION = 2; INFOPLIST_FILE = StockKeyboard/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 1.0.1; PRODUCT_BUNDLE_IDENTIFIER = com.luckinstocktaking.luckinstocktaking.StockKeyboard; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SKIP_INSTALL = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
 		A10000000000000000000012 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_ENTITLEMENTS = StockKeyboard/StockKeyboard.entitlements; CURRENT_PROJECT_VERSION = 2; INFOPLIST_FILE = StockKeyboard/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 1.0.1; PRODUCT_BUNDLE_IDENTIFIER = com.luckinstocktaking.luckinstocktaking.StockKeyboard; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SKIP_INSTALL = YES; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
 		A10000000000000000000013 /* Profile */ = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_ENTITLEMENTS = StockKeyboard/StockKeyboard.entitlements; CURRENT_PROJECT_VERSION = 2; INFOPLIST_FILE = StockKeyboard/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 1.0.1; PRODUCT_BUNDLE_IDENTIFIER = com.luckinstocktaking.luckinstocktaking.StockKeyboard; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SKIP_INSTALL = YES; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Profile; };
@@ -396,6 +429,7 @@
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -577,6 +611,7 @@
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -599,6 +634,7 @@
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -614,6 +650,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		C30000000000000000000010 = {isa = XCConfigurationList; buildConfigurations = (C30000000000000000000014, C30000000000000000000015, C30000000000000000000016, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		A1000000000000000000000D /* Build configuration list for PBXNativeTarget "StockKeyboard" */ = {isa = XCConfigurationList; buildConfigurations = (A10000000000000000000011 /* Debug */, A10000000000000000000012 /* Release */, A10000000000000000000013 /* Profile */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		331C8087294A63A400263BE5 /* Build configuration list for PBXNativeTarget "RunnerTests" */ = {
 			isa = XCConfigurationList;

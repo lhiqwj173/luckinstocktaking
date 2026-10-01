@@ -1,5 +1,6 @@
 import AppIntents
 import Foundation
+import UniformTypeIdentifiers
 
 @available(iOS 16.0, *)
 private enum StocktakingError: LocalizedError {
@@ -189,5 +190,77 @@ struct CalculateStockIntent: AppIntent {
       weight = try await $weightGrams.requestValue("请输入称重（克）")
     }
     return .result(value: try chosen.calculate(weight: weight))
+  }
+}
+
+@available(iOS 16.0, *)
+struct ReadOldStockIntent: AppIntent {
+  static var title: LocalizedStringResource { "读取旧盘点单" }
+  static var description = IntentDescription("将系统录屏拼成长截图并识别文字，保存为待校对历史；也支持直接传入截图。")
+  static var openAppWhenRun: Bool { true }
+
+  @Parameter(title: "盘点单文件", supportedContentTypes: [.movie, .image])
+  var file: IntentFile
+  @Parameter(title: "录屏视频", default: true)
+  var video: Bool
+  @Parameter(title: "顶部裁剪比例", default: 0.18)
+  var top: Double
+  @Parameter(title: "底部裁剪比例", default: 0.10)
+  var bottom: Double
+
+  func perform() async throws -> some IntentResult & ReturnsValue<String> {
+    let crop = StockCrop(top: top, bottom: bottom)
+    try crop.validate()
+    let local = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+      .appendingPathExtension(video ? "mov" : "png")
+    if let source = file.fileURL {
+      let scoped = source.startAccessingSecurityScopedResource()
+      defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+      try FileManager.default.copyItem(at: source, to: local)
+    } else {
+      try file.data.write(to: local, options: .atomic)
+    }
+    let document: StockHistoryDocument = try await withCheckedThrowingContinuation { continuation in
+      StockHistoryStorage.queue.async {
+        do {
+          let record = try StockHistoryProcessor.process(url: local, video: video, crop: crop)
+          try FileManager.default.removeItem(at: local)
+          UserDefaults.standard.set(record.id, forKey: StockHistoryStorage.pendingKey)
+          DispatchQueue.main.async {
+            NotificationCenter.default.post(name: StockHistoryStorage.readyNotification, object: nil)
+          }
+          continuation.resume(returning: record)
+        } catch {
+          do { try FileManager.default.removeItem(at: local) }
+          catch { continuation.resume(throwing: error); return }
+          continuation.resume(throwing: error)
+        }
+      }
+    }
+    return .result(value: "已保存 \(document.lines.count) 行文字，请在「旧盘点单」中校对：\(document.title)")
+  }
+}
+
+@available(iOS 16.0, *)
+struct StartOldStockCaptureIntent: AppIntent {
+  static var title: LocalizedStringResource { "开始读取旧盘点单" }
+  static var description = IntentDescription("打开盘点单专用系统录屏入口。确认开始后切回瑞幸盘；结束后返回助手自动处理，无需选择视频。")
+  static var openAppWhenRun: Bool { true }
+  @Parameter(title: "顶部裁剪比例", default: 0.18)
+  var top: Double
+  @Parameter(title: "底部裁剪比例", default: 0.10)
+  var bottom: Double
+
+  func perform() async throws -> some IntentResult {
+    let request = StockCaptureRequest(id: UUID().uuidString, createdAt: Date(), top: top, bottom: bottom)
+    try request.validate()
+    guard let json = String(data: try JSONEncoder().encode(request), encoding: .utf8) else {
+      throw StockCaptureError.invalid("无法编码录屏启动配置")
+    }
+    UserDefaults.standard.set(json, forKey: StockHistoryStorage.captureStartKey)
+    await MainActor.run {
+      NotificationCenter.default.post(name: StockHistoryStorage.readyNotification, object: nil)
+    }
+    return .result()
   }
 }
