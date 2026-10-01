@@ -101,6 +101,36 @@ class _StockHistoryPageState extends State<StockHistoryPage>
     }
   }
 
+  Future<void> _delete(StockDocument document) async {
+    if (_busy) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除盘点单？'),
+        content: Text('将删除「${document.title}」及其原始长图，无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _operation(() async {
+      await _store.delete(document);
+      if (mounted) {
+        setState(
+          () => _documents.removeWhere((item) => item.id == document.id),
+        );
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -253,7 +283,17 @@ class _StockHistoryPageState extends State<StockHistoryPage>
                       ? '${_date(document.createdAt)} · ${document.lines.length} 项货物 · ${document.reviewed ? '已校对' : '待校对'}'
                       : '${_date(document.createdAt)} · 待整理为两列表格',
                 ),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: '删除盘点单',
+                      onPressed: _busy ? null : () => _delete(document),
+                      icon: const Icon(Icons.delete_outline),
+                    ),
+                    const Icon(Icons.chevron_right),
+                  ],
+                ),
                 onTap: () => _operation(() => _open(document)),
               ),
             ),
@@ -279,7 +319,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   late List<StockLine> _lines;
   late StockDocument _document;
   bool _preparing = false;
-  Uint8List? _image;
+  List<Uint8List>? _images;
   String? _error;
   bool _saving = false;
   bool _showImage = false;
@@ -296,8 +336,8 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   Future<void> _prepare() async {
     setState(() => _preparing = true);
     try {
-      final image = await _store.image(_document);
-      if (mounted) setState(() => _image = image);
+      final images = await _store.imageTiles(_document);
+      if (mounted) setState(() => _images = images);
       final table = await _store.table(_document);
       if (mounted) {
         setState(() {
@@ -425,7 +465,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                   _saving ||
                       _preparing ||
                       _document.schemaVersion != 2 ||
-                      _image == null
+                      _images == null
                   ? null
                   : _save,
               icon: const Icon(Icons.save_outlined),
@@ -475,7 +515,32 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
               const LinearProgressIndicator(),
               const Text('正在从历史长图整理两列盘点表，请保持助手打开…'),
             ],
-            if (_showImage && _image != null) Image.memory(_image!),
+            if (_showImage && _images != null) ...[
+              const Text('长图按原比例显示，上下滚动查看；点击任意一段可放大核对。'),
+              const SizedBox(height: 12),
+              for (final image in _images!)
+                GestureDetector(
+                  onTap: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (context) => Scaffold(
+                        appBar: AppBar(title: const Text('放大查看')),
+                        body: InteractiveViewer(
+                          minScale: 1,
+                          maxScale: 6,
+                          child: Center(
+                            child: Image.memory(image, fit: BoxFit.contain),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  child: Image.memory(
+                    image,
+                    width: double.infinity,
+                    fit: BoxFit.fitWidth,
+                  ),
+                ),
+            ],
             if (!_showImage && !_preparing && _document.schemaVersion == 2) ...[
               TextField(
                 controller: _query,

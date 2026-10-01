@@ -164,6 +164,23 @@ class StockHistoryStore {
     await channel.invokeMethod<void>('save', jsonEncode(document.toJson()));
   }
 
+  Future<void> delete(StockDocument document) async {
+    document.validate();
+    await channel.invokeMethod<void>('delete', document.id);
+    changes.value++;
+  }
+
+  Future<List<Uint8List>> imageTiles(StockDocument document) async {
+    final tiles = await channel.invokeListMethod<Uint8List>(
+      'imageTiles',
+      document.id,
+    );
+    if (tiles == null || tiles.isEmpty || tiles.any((tile) => tile.isEmpty)) {
+      throw StateError('无法读取长图预览');
+    }
+    return tiles;
+  }
+
   Future<Uint8List> image(StockDocument document) async {
     final bytes = await channel.invokeMethod<Uint8List>('image', document.id);
     if (bytes == null || bytes.isEmpty) throw StateError('无法读取盘点单原图');

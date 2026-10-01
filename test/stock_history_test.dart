@@ -84,8 +84,8 @@ void main() {
             },
           ];
           return jsonEncode(table);
-        case 'image':
-          return png!;
+        case 'imageTiles':
+          return [png!];
         case 'save':
           saved = jsonDecode(call.arguments as String) as Map<String, dynamic>;
           return null;
@@ -117,6 +117,53 @@ void main() {
     expect(saved!['reviewed'], true);
     expect((saved!['lines'] as List).length, 2);
     expect(find.text('盘点单详情'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('识别失败仍能按原比例查看长图分段并放大', (tester) async {
+    final png = await tester.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawRect(
+        const Rect.fromLTWH(0, 0, 192, 1800),
+        Paint()..color = Colors.white,
+      );
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(192, 1800);
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      picture.dispose();
+      return data!.buffer.asUint8List();
+    });
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'imageTiles') return [png!, png];
+      if (call.method == 'table') {
+        throw PlatformException(code: 'OCR_FAILED', message: '库存识别失败');
+      }
+      throw StateError('意外的平台请求');
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StockDocumentPage(document: StockDocument.fromJson(record())),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('库存识别失败'), findsOneWidget);
+    await tester.ensureVisible(find.text('查看长图'));
+    await tester.tap(find.text('查看长图'));
+    await tester.pumpAndSettle();
+    final tile = find.byType(Image).first;
+    await tester.runAsync(
+      () =>
+          precacheImage(tester.widget<Image>(tile).image, tester.element(tile)),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(tile);
+    final size = tester.getSize(tile);
+    expect(size.height / size.width, closeTo(1800 / 192, .001));
+    await tester.tapAt(tester.getTopLeft(tile) + const Offset(20, 20));
+    await tester.pumpAndSettle();
+    expect(find.text('放大查看'), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -275,5 +322,56 @@ void main() {
     await tester.tap(find.byTooltip('刷新历史'));
     await tester.pumpAndSettle();
     expect(find.text('原图损坏'), findsOneWidget);
+  });
+
+  testWidgets('删除需确认，失败保留记录，成功只删除指定单据', (tester) async {
+    final remaining = [
+      record(),
+      {
+        ...record(title: '另一张单据'),
+        'id': '22345678-1234-1234-1234-123456789abc',
+        'imageName': '22345678-1234-1234-1234-123456789abc.png',
+      },
+    ];
+    final deleted = <String>[];
+    var failDelete = true;
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'list') return jsonEncode(remaining);
+      if (call.method == 'delete') {
+        if (failDelete) {
+          throw PlatformException(code: 'DELETE_FAILED', message: '删除失败');
+        }
+        deleted.add(call.arguments as String);
+        remaining.removeWhere((item) => item['id'] == call.arguments);
+        return null;
+      }
+      throw StateError('意外的平台请求');
+    });
+    await tester.pumpWidget(const MaterialApp(home: StockHistoryPage()));
+    await tester.pumpAndSettle();
+    final button = find.byTooltip('删除盘点单').first;
+    await tester.ensureVisible(button);
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('无法恢复'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(deleted, isEmpty);
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+    expect(find.text('删除失败'), findsOneWidget);
+    expect(find.text('人民路店 2026-09-30'), findsOneWidget);
+    failDelete = false;
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+    expect(deleted, ['12345678-1234-1234-1234-123456789abc']);
+    expect(find.text('人民路店 2026-09-30'), findsNothing);
+    expect(find.text('另一张单据'), findsOneWidget);
+    expect(find.text('历史记录 · 1'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 }

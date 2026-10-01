@@ -24,6 +24,20 @@ struct StockOCRCell {
 }
 
 enum StockTableParser {
+  static func splitColumnGap(_ text: String, characters: [(Range<String.Index>, CGRect)],
+    stockColumnStart: CGFloat) -> [Range<String.Index>] {
+    guard characters.count >= 2 else { return [text.startIndex..<text.endIndex] }
+    for index in 1..<characters.count {
+      let previous = characters[index - 1]
+      let next = characters[index]
+      let gap = next.1.minX - previous.1.maxX
+      if previous.1.minX < stockColumnStart, next.1.minX >= stockColumnStart,
+        gap > max(previous.1.height, next.1.height) * 0.8 {
+        return [text.startIndex..<next.0.lowerBound, next.0.lowerBound..<text.endIndex]
+      }
+    }
+    return [text.startIndex..<text.endIndex]
+  }
   static func rows(_ cells: [StockOCRCell]) throws -> [StockTextLine] {
     let ordered = cells.sorted {
       $0.box.midY == $1.box.midY ? $0.box.minX < $1.box.minX : $0.box.midY < $1.box.midY
@@ -37,7 +51,7 @@ enum StockTableParser {
       }), stockHeader.box.minX > nameHeader.box.maxX else {
       throw StockHistoryError.invalid("未识别到「货物规格名称 / 实盘总库存」表头，请确认长图包含表头")
     }
-    let boundary = stockHeader.box.minX
+    let boundary = (nameHeader.box.maxX + stockHeader.box.minX) / 2
     let top = max(nameHeader.box.maxY, stockHeader.box.maxY)
     let footer = ordered.first(where: { cell in
       cell.box.minY > top && ["预制物料信息", "其他信息", "历史记录"].contains(where: { compact(cell.text).contains($0) })
@@ -59,12 +73,15 @@ enum StockTableParser {
       throw StockHistoryError.invalid("货物编码识别不完整，无法可靠划分货物行，请核对原始长图")
     }
     return try names.enumerated().map { index, parts in
-      let start = parts.map { $0.box.minY }.min()!
-      let end = index + 1 < names.count ? names[index + 1].map { $0.box.minY }.min()! : footer
+      // 左右两列独立垂直居中，库存可能比品名更高；用相邻名称块间的空白中点划分行。
+      let start = index == 0 ? top :
+        (names[index - 1].map { $0.box.maxY }.max()! + parts.map { $0.box.minY }.min()!) / 2
+      let end = index + 1 < names.count ?
+        (parts.map { $0.box.maxY }.max()! + names[index + 1].map { $0.box.minY }.min()!) / 2 : footer
       let stocks = body.filter { $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end }
       let inventory = stocks.map(\.text).joined(separator: "\n")
       guard !stocks.isEmpty, inventory.range(of: "[0-9]", options: .regularExpression) != nil else {
-        throw StockHistoryError.invalid("第 \(index + 1) 项货物缺少可识别的库存数量，请核对原始长图")
+        throw StockHistoryError.invalid("第 \(index + 1) 项货物（\(parts.map(\.text).joined(separator: " "))）缺少可识别的库存数量，请核对原始长图")
       }
       return StockTextLine(cells: [parts.map(\.text).joined(separator: "\n"), inventory],
         confidence: (parts + stocks).map(\.confidence).min()!)
@@ -190,6 +207,33 @@ enum StockHistoryStorage {
   }
   static func image(_ id: String) throws -> Data {
     try Data(contentsOf: directory(id).appendingPathComponent("\(id).png"))
+  }
+  static func delete(_ id: String) throws {
+    let location = try directory(id)
+    let record = try JSONDecoder().decode(StockHistoryDocument.self,
+      from: Data(contentsOf: location.appendingPathComponent("record.json")))
+    try record.validate()
+    guard record.id == id else { throw StockHistoryError.invalid("待删除的盘点单标识不一致") }
+    try FileManager.default.removeItem(at: location)
+    if UserDefaults.standard.string(forKey: pendingKey) == id {
+      UserDefaults.standard.removeObject(forKey: pendingKey)
+    }
+  }
+  static func imageTiles(_ id: String) throws -> [Data] {
+    guard let cg = UIImage(data: try image(id))?.cgImage else {
+      throw StockHistoryError.invalid("历史长图无法读取")
+    }
+    // 超长纹理可能超过 GPU 上限，分别解码短图，保持每一段的原始宽高比。
+    return try stride(from: 0, to: cg.height, by: 1800).map { start in
+      try autoreleasepool {
+        guard let tile = cg.cropping(to: CGRect(x: 0, y: start,
+          width: cg.width, height: min(1800, cg.height - start))),
+          let png = UIImage(cgImage: tile).pngData() else {
+          throw StockHistoryError.invalid("无法生成长图预览分段")
+        }
+        return png
+      }
+    }
   }
 }
 
@@ -439,6 +483,7 @@ enum StockHistoryProcessor {
     guard let cg = image.cgImage else { throw StockHistoryError.invalid("无法读取截图像素") }
     let recognitionImage = try textImage(cg)
     var cells: [StockOCRCell] = []
+    var stockColumnStart: CGFloat?
     // 对长图分块识别，用中心点归属消除块边缘重复；不按文本去重，保留真实重复行。
     let block = 1800
     let margin = 120
@@ -471,6 +516,80 @@ enum StockHistoryProcessor {
           if rect.midY >= Double(start) && rect.midY < Double(min(cg.height, start + block)) {
             let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { throw StockHistoryError.invalid("识别到空文字，请检查截图") }
+            if text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression).contains("实盘总库存") {
+              stockColumnStart = rect.midX - rect.height * 0.75
+            }
+            // Vision 可能把同一高度的品名续行和库存合并。根据字符间真实空白拆列，
+            // 不能按字符串中的数字拆分，规格本身也包含数字。
+            let original = candidate.string
+            var ranges = [original.startIndex..<original.endIndex]
+            if let column = stockColumnStart, rect.minX < column, rect.maxX > column {
+              var characters: [(Range<String.Index>, CGRect)] = []
+              for index in original.indices where !original[index].isWhitespace {
+                let range = index..<original.index(after: index)
+                guard let character = try candidate.boundingBox(for: range) else {
+                  throw StockHistoryError.invalid("无法定位识别文字的列边界")
+                }
+                let box = character.boundingBox
+                characters.append((range, CGRect(x: box.minX * Double(cg.width), y: 0,
+                  width: box.width * Double(cg.width), height: box.height * Double(bottom - top))))
+              }
+              ranges = StockTableParser.splitColumnGap(original, characters: characters, stockColumnStart: column)
+            }
+            for range in ranges {
+              guard let observation = try candidate.boundingBox(for: range) else {
+                throw StockHistoryError.invalid("无法定位识别文字")
+              }
+              let box = observation.boundingBox
+              let part = String(original[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+              guard !part.isEmpty else { throw StockHistoryError.invalid("识别文字分列后为空") }
+              cells.append(StockOCRCell(text: part, confidence: Double(candidate.confidence),
+                box: CGRect(x: box.minX * Double(cg.width),
+                  y: Double(top) + (1 - box.maxY) * Double(bottom - top),
+                  width: box.width * Double(cg.width), height: box.height * Double(bottom - top))))
+            }
+          }
+        }
+      }
+    }
+    guard let header = cells.first(where: {
+      $0.text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression).contains("实盘总库存")
+    }) else { throw StockHistoryError.invalid("未识别到实盘总库存表头") }
+    // 单独识别库存列，避免横跨两列的长文字吞掉短数量。保留完整品名识别，
+    // 右列裁剪从表头中心略向左开始；该页面的数量统一左对齐。
+    let columnX = Int((header.box.midX - header.box.height * 0.75).rounded(.down))
+    guard columnX > 0, columnX < cg.width else { throw StockHistoryError.invalid("库存列位置无效") }
+    cells.removeAll { $0.box.minX >= header.box.minX && $0.box.midY > header.box.maxY }
+    for start in stride(from: 0, to: cg.height, by: block) {
+      try autoreleasepool {
+        let top = max(0, start - margin)
+        let bottom = min(cg.height, start + block + margin)
+        progress("正在识别库存列 · \(start / block + 1)/\((cg.height + block - 1) / block)")
+        guard let tile = recognitionImage.cropping(to: CGRect(x: columnX, y: top,
+          width: cg.width - columnX, height: bottom - top)) else {
+          throw StockHistoryError.invalid("无法读取库存列")
+        }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: tile, options: [:]).perform([request])
+        guard let results = request.results else { throw StockHistoryError.invalid("库存识别未返回结果") }
+        for observation in results {
+          guard let candidate = observation.topCandidates(1).first else {
+            throw StockHistoryError.invalid("库存识别候选为空")
+          }
+          let dx = observation.topRight.x - observation.topLeft.x
+          let dy = observation.topRight.y - observation.topLeft.y
+          if abs(dy) * Double(tile.height) > abs(dx) * Double(tile.width) * 0.25 { continue }
+          let box = observation.boundingBox
+          let rect = CGRect(x: Double(columnX) + box.minX * Double(tile.width),
+            y: Double(top) + (1 - box.maxY) * Double(tile.height),
+            width: box.width * Double(tile.width), height: box.height * Double(tile.height))
+          if rect.midY >= Double(start), rect.midY < Double(min(cg.height, start + block)),
+            rect.midY > header.box.maxY {
+            let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw StockHistoryError.invalid("库存识别文字为空") }
             cells.append(StockOCRCell(text: text, confidence: Double(candidate.confidence), box: rect))
           }
         }
@@ -563,6 +682,12 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
         case "image":
           guard let id = call.arguments as? String else { throw StockHistoryError.invalid("盘点单标识缺失") }
           value = FlutterStandardTypedData(bytes: try StockHistoryStorage.image(id))
+        case "imageTiles":
+          guard let id = call.arguments as? String else { throw StockHistoryError.invalid("盘点单标识缺失") }
+          value = try StockHistoryStorage.imageTiles(id).map { FlutterStandardTypedData(bytes: $0) }
+        case "delete":
+          guard let id = call.arguments as? String else { throw StockHistoryError.invalid("盘点单标识缺失") }
+          try StockHistoryStorage.delete(id); value = nil
         default: value = FlutterMethodNotImplemented
         }
         DispatchQueue.main.async {

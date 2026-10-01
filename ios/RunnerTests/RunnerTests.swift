@@ -110,6 +110,102 @@ class RunnerTests: XCTestCase {
     XCTAssertThrowsError(try StockTableParser.rows(cells.filter { $0.text != "实盘总库存" }))
   }
 
+  func testInventoryCanExtendAboveNameAndStartLeftOfHeader() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
+    }
+    let cells = [
+      cell("货物规格名称", 20, 0), cell("实盘总库存", 440, 0),
+      cell("上一项", 80, 50), cell("GS00395-09", 80, 80), cell("3盒", 500, 65),
+      cell("新塞尚黄油丝绒风味奶", 80, 145), cell("GS06628-06", 80, 175),
+      cell("总库存：12.1盒", 420, 120), cell("冷藏：12.1盒", 420, 150), cell("冷冻：0盒", 420, 180),
+      cell("下一项", 80, 240), cell("GS05532-05", 80, 270), cell("5.7盒", 500, 255),
+      cell("预制物料信息", 20, 310),
+    ]
+    let rows = try StockTableParser.rows(cells)
+    XCTAssertEqual(rows[0].cells[1], "3盒")
+    XCTAssertEqual(rows[1].cells[1], "总库存：12.1盒\n冷藏：12.1盒\n冷冻：0盒")
+    XCTAssertEqual(rows[2].cells[1], "5.7盒")
+    XCTAssertThrowsError(try StockTableParser.rows(cells.filter { !$0.text.contains("12.1") && $0.text != "冷冻：0盒" }))
+  }
+
+  func testVisionRecognizesInventoryFromProvidedRecording() throws {
+    // 从用户录屏的原比例长图截取表头、126～128项及176～177项，保留原水印。
+    let url = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
+      forResource: "recording_inventory_rows", withExtension: "png", subdirectory: "Fixtures"))
+    let image = try XCTUnwrap(UIImage(data: Data(contentsOf: url)))
+    let rows = try StockHistoryProcessor.recognize(image)
+    XCTAssertEqual(rows.count, 5)
+    let milk = try XCTUnwrap(rows.first { $0.cells[0].contains("GS06628-06") })
+    XCTAssertTrue(milk.cells[1].contains("12.1"))
+    XCTAssertFalse(milk.cells[0].contains("12.1"))
+    let straw = try XCTUnwrap(rows.first { $0.cells[0].contains("GS01429-09") })
+    XCTAssertTrue(straw.cells[1].contains("400"))
+    XCTAssertTrue(straw.cells[1].contains("2"))
+  }
+
+  func testMergedNameAndInventorySplitUsesGeometryRatherThanSpecificationDigits() {
+    let text = "型含乳饮料）1L*12盒/箱 12.1盒"
+    let quantityStart = text.range(of: "12.1盒")!.lowerBound
+    var characters: [(Range<String.Index>, CGRect)] = []
+    var left = 110.0
+    var right = 508.0
+    for index in text.indices where !text[index].isWhitespace {
+      let x = index < quantityStart ? left : right
+      characters.append((index..<text.index(after: index), CGRect(x: x, y: 0, width: 18, height: 26)))
+      if index < quantityStart { left += 20 } else { right += 20 }
+    }
+    let parts = StockTableParser.splitColumnGap(text, characters: characters, stockColumnStart: 440)
+      .map { String(text[$0]).trimmingCharacters(in: .whitespacesAndNewlines) }
+    XCTAssertEqual(parts, ["型含乳饮料）1L*12盒/箱", "12.1盒"])
+    let uninterrupted = characters.enumerated().map { index, item in
+      (item.0, CGRect(x: 110 + index * 20, y: 0, width: 18, height: 26))
+    }
+    XCTAssertEqual(StockTableParser.splitColumnGap(text, characters: uninterrupted, stockColumnStart: 440).count, 1)
+  }
+
+  func testDeleteRemovesOnlySelectedDocumentAndItsOriginalImage() throws {
+    let image = UIImage(cgImage: pattern())
+    let lines = [StockTextLine(cells: ["奶油", "12.1盒"], confidence: 1)]
+    let first = try StockHistoryStorage.create(image: image, lines: lines)
+    let second = try StockHistoryStorage.create(image: image, lines: lines)
+    addTeardownBlock {
+      for record in [first, second] {
+        let location = try StockHistoryStorage.directory(record.id)
+        if FileManager.default.fileExists(atPath: location.path) { try FileManager.default.removeItem(at: location) }
+      }
+    }
+    let backup = try StockHistoryStorage.directory(first.id).appendingPathComponent("legacy-recognized-lines.json")
+    try Data("{}".utf8).write(to: backup)
+    try StockHistoryStorage.delete(first.id)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: try StockHistoryStorage.directory(first.id).path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+    XCTAssertFalse(try StockHistoryStorage.image(second.id).isEmpty)
+    XCTAssertThrowsError(try StockHistoryStorage.delete(first.id))
+    XCTAssertThrowsError(try StockHistoryStorage.delete("../" + second.id))
+  }
+
+  func testLongImagePreviewTilesPreserveAllPixelsAndAspectRatio() throws {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 192, height: 4000), format: format).image { context in
+      UIColor.white.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 192, height: 4000))
+    }
+    let record = try StockHistoryStorage.create(image: image,
+      lines: [StockTextLine(cells: ["奶油", "12.1盒"], confidence: 1)])
+    addTeardownBlock { try StockHistoryStorage.delete(record.id) }
+    let tiles = try StockHistoryStorage.imageTiles(record.id)
+    let images = try tiles.map { data -> CGImage in
+      guard let image = UIImage(data: data)?.cgImage else {
+        throw StockHistoryError.invalid("测试预览无法解码")
+      }
+      return image
+    }
+    XCTAssertEqual(images.map(\.height), [1800, 1800, 400])
+    XCTAssertTrue(images.allSatisfy { $0.width == 192 })
+  }
+
   func testBlankAndUnmatchedImagesAreNotAccepted() throws {
     let format = UIGraphicsImageRendererFormat()
     format.scale = 1
