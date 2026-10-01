@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'category.dart';
 import 'catalog_store.dart';
 import 'catalog_tsv.dart';
+import 'shortcut_guide.dart';
 
 void main() => runApp(const StocktakingApp());
 
@@ -443,9 +444,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 const SizedBox(height: 20),
-                const Text(
-                  '跨 App 使用：在“快捷指令”中依次添加“称重盘点计算”→“替换文本”→“复制到剪贴板”→“显示结果”。计算动作的“品类名称或别名”和“称重（克）”均留空；“替换文本”的输入选计算输出，开启“正则表达式”，查找 ：[^：]*\$，替换内容必须完全为空，不能填空格；“复制到剪贴板”的输入选替换结果；“显示结果”的输入明确选计算输出。运行时先输入品类名称或别名，多个匹配项先选择，再输入称重；最终显示份数并原样复制用户输入的名称。匹配不到会直接停止；未勾选“允许多份”的品类结果限为 0.1～0.9 份。可在“设置 → 辅助功能 → 触控 → 轻点背面”中指定该快捷指令。',
-                ),
+                const ShortcutGuide(),
               ],
             ),
     );
