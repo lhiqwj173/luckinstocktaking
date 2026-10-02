@@ -118,7 +118,7 @@ class _StockHistoryPageState extends State<StockHistoryPage>
               DropdownButtonFormField<String>(
                 initialValue: baseline,
                 isExpanded: true,
-                decoration: const InputDecoration(labelText: '基准盘点单'),
+                decoration: const InputDecoration(labelText: '原盘点单'),
                 items: [
                   for (final document in _documents)
                     DropdownMenuItem(
@@ -131,11 +131,14 @@ class _StockHistoryPageState extends State<StockHistoryPage>
                 ],
                 onChanged: (value) => update(() => baseline = value!),
               ),
-              const SizedBox(height: 16),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Icon(Icons.arrow_downward_rounded, size: 20),
+              ),
               DropdownButtonFormField<String>(
                 initialValue: target,
                 isExpanded: true,
-                decoration: const InputDecoration(labelText: '对照盘点单'),
+                decoration: const InputDecoration(labelText: '新盘点单'),
                 items: [
                   for (final document in _documents)
                     DropdownMenuItem(
@@ -543,6 +546,19 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('盘点单详情'),
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(76),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: TextField(
+                controller: _title,
+                enabled: !_saving,
+                decoration: const InputDecoration(
+                  labelText: '单据名称（可填写日期 / 门店 / 单号）',
+                ),
+              ),
+            ),
+          ),
           actions: [
             IconButton(
               onPressed: () => setState(() => _showImage = !_showImage),
@@ -572,14 +588,6 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
         body: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            TextField(
-              controller: _title,
-              enabled: !_saving,
-              decoration: const InputDecoration(
-                labelText: '单据名称（可填写日期 / 门店 / 单号）',
-              ),
-            ),
-            const SizedBox(height: 12),
             Text(
               '导入于 ${_date(widget.document.createdAt)} · ${_document.schemaVersion == 2 ? '${_lines.length} 项货物' : '等待整理货物表'}',
               style: theme.textTheme.bodySmall,

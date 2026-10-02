@@ -143,7 +143,7 @@ void main() {
         ),
       ),
     );
-    expect(find.text('+1盒'), findsOneWidget);
+    expect(find.text('增加 1盒'), findsOneWidget);
     expect(find.text('库存相同'), findsNothing);
     await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
@@ -172,7 +172,7 @@ void main() {
     await tester.tap(find.text('查看差异'));
     await tester.pumpAndSettle();
     expect(find.text('库存差异'), findsOneWidget);
-    expect(find.text('+1盒'), findsOneWidget);
+    expect(find.text('增加 1盒'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

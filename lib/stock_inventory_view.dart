@@ -20,27 +20,24 @@ class StockInventoryView extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
         Wrap(
-          spacing: 6,
-          runSpacing: 6,
+          spacing: 10,
+          runSpacing: 2,
           children: [
             for (final label in ['冷藏', '冷冻'])
               if (inventory.parts[label] case final quantity?
                   when quantity.hasValue)
-                Container(
-                  margin: const EdgeInsets.only(top: 6),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 7,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: label == '冷冻'
-                        ? theme.colorScheme.secondaryContainer
-                        : theme.colorScheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 3),
                   child: Text(
                     '$label ${quantity.display}',
-                    style: const TextStyle(fontSize: 12),
+                    style: TextStyle(
+                      fontSize: 12,
+                      height: 1.35,
+                      color:
+                          quantity.amounts.values.every((value) => value.isZero)
+                          ? theme.colorScheme.outline
+                          : theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
           ],
