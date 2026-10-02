@@ -6,6 +6,35 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  func testOverlappingOCRBlocksDoNotCreateAnExtraProductCodeRow() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double, _ width: Double, _ height: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: width, height: height))
+    }
+    let cells = [
+      cell("货物规格名称", 20, 0, 180, 20), cell("实盘总库存", 500, 0, 180, 20),
+      cell("九宇抹茶粉100g*50袋/箱\nGS10665-02", 20, 1770, 380, 60),
+      cell("GS10665-02", 20, 1804, 220, 20),
+      cell("1.4袋", 500, 1785, 100, 25),
+      cell("鑫国经典提拉米苏杯子蛋糕\nGS10667-01", 20, 1900, 380, 60),
+      cell("总库存:5个", 500, 1910, 160, 25),
+      cell("总库存:5个", 501, 1911, 160, 25),
+      cell("冷藏:0个", 500, 1940, 160, 20),
+      cell("冷冻:5个", 500, 1965, 160, 20),
+      // 下方真实存在的同货号项目必须保留，不能全表按货号删重。
+      cell("九宇抹茶粉100g*50袋/箱\nGS10665-02", 20, 2100, 380, 60),
+      cell("2袋", 500, 2115, 100, 25)
+    ]
+    let rows = try StockTableParser.rows(cells)
+    XCTAssertEqual(rows.count, 3)
+    XCTAssertEqual(rows[0].cells[1], "1.4袋")
+    XCTAssertTrue(rows[0].cells[0].contains("九宇抹茶粉"))
+    XCTAssertFalse(rows[0].inventoryUncertain ?? true)
+    XCTAssertEqual(rows[1].cells[1], "总库存:5个\n冷藏:0个\n冷冻:5个")
+    XCTAssertEqual(rows.filter { $0.cells[0].contains("GS10665-02") }.count, 2)
+    let reversed = try StockTableParser.rows(Array(cells.reversed()))
+    XCTAssertEqual(reversed.map(\.cells), rows.map(\.cells))
+  }
+
   func testDefaultNameUsesOrderDateAndStocktakingKind() throws {
     for (code, kind, title) in [
       ("PD2026092510305", "门店-周盘", "2026-09-25 周盘"),

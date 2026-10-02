@@ -44,6 +44,11 @@ void main() {
       reason: '不能把漏识别的 I3 当作 3',
     );
     expect(StockInventory.parse('I3包').needsReview, true);
+    final separated = StockInventory.parse('总库存；-个\n冷藏:-盒0个\n冷冻:-盒0个');
+    expect(separated.needsReview, false);
+    expect(separated.parts['库存']!.hasValue, false);
+    expect(separated.parts['冷藏']!.display, '0个');
+    expect(separated.parts['冷冻']!.display, '0个');
     final empty = document('1', [line('GS08291-01', '')]);
     expect(() => empty.validate(), returnsNormally);
   });

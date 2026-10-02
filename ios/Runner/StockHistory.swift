@@ -29,6 +29,39 @@ enum StockOCRRefinement {
   static func compact(_ text: String) -> String {
     text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
   }
+  static func coalesce(_ cells: [StockOCRCell]) -> [StockOCRCell] {
+    let pattern = "[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}"
+    var output: [StockOCRCell] = []
+    var groups: [String: [Int]] = [:]
+    for cell in cells {
+      precondition(cell.box.width > 0 && cell.box.height > 0, "识别文字区域必须非空")
+      let text = compact(cell.text)
+      let code = text.range(of: pattern, options: .regularExpression).map { String(text[$0]).uppercased() }
+      let key = code.map { "code:\($0)" } ?? "text:\(text)"
+      let duplicate = (groups[key] ?? []).first { index in
+        let other = output[index]
+        let otherText = compact(other.text)
+        // 仅合并同一像素区域的重复结果；不同位置的相同货号仍是两个真实条目。
+        guard text == otherText || (code != nil &&
+          (text.uppercased() == code || otherText.uppercased() == code)) else { return false }
+        let intersection = cell.box.intersection(other.box)
+        guard !intersection.isNull else { return false }
+        let area = min(cell.box.width * cell.box.height, other.box.width * other.box.height)
+        return intersection.width * intersection.height / area >= 0.6
+      }
+      if let index = duplicate {
+        let other = output[index]
+        let otherText = compact(other.text)
+        if text.count > otherText.count || (text.count == otherText.count && cell.confidence > other.confidence) {
+          output[index] = cell
+        }
+      } else {
+        groups[key, default: []].append(output.count)
+        output.append(cell)
+      }
+    }
+    return output
+  }
   static func match(_ original: StockOCRCell, in candidates: [StockOCRCell]) -> StockOCRCell? {
     let area = original.box.width * original.box.height
     precondition(area > 0, "复识别原始文字区域必须非空")
@@ -62,7 +95,7 @@ enum StockOCRRefinement {
 
 enum StockTableParser {
   static func blankInventory(_ text: String) -> Bool {
-    let value = text.replacingOccurrences(of: "\\s+|总库存[:：·]?|冷藏[:：·]?|冷冻[:：·]?", with: "", options: .regularExpression)
+    let value = text.replacingOccurrences(of: "\\s+|总库存[:：·;；]?|冷藏[:：·;；]?|冷冻[:：·;；]?", with: "", options: .regularExpression)
     return value.isEmpty || value.range(of: "^(?:[-－—一]+[\\p{Han}A-Za-z]{0,3})+$", options: .regularExpression) != nil
   }
   static func splitColumnGap(_ text: String, characters: [(Range<String.Index>, CGRect)],
@@ -81,7 +114,7 @@ enum StockTableParser {
   }
   static func rows(_ cells: [StockOCRCell],
     retryInventory: ((CGFloat, CGFloat) throws -> [StockOCRCell])? = nil) throws -> [StockTextLine] {
-    let ordered = cells.sorted {
+    let ordered = StockOCRRefinement.coalesce(cells).sorted {
       $0.box.midY == $1.box.midY ? $0.box.minX < $1.box.minX : $0.box.midY < $1.box.midY
     }
     func compact(_ text: String) -> String {
@@ -477,7 +510,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 2
+  static let recognitionRevision = 3
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let first = try StockScreenshotInput.ordered(inputs)[0]
@@ -785,10 +818,11 @@ enum StockHistoryProcessor {
           let rect = CGRect(x: bounds.minX * Double(cg.width),
             y: Double(top) + (1 - bounds.maxY) * Double(bottom - top),
             width: bounds.width * Double(cg.width), height: bounds.height * Double(bottom - top))
-          if rect.midY >= Double(start) && rect.midY < Double(min(cg.height, start + block)) {
+          do {
             let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { throw StockHistoryError.invalid("识别到空文字，请检查截图") }
-            if text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression).contains("实盘总库存") {
+            if rect.midY >= Double(start), rect.midY < Double(min(cg.height, start + block)),
+              text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression).contains("实盘总库存") {
               stockColumnStart = rect.midX - rect.height * 0.75
             }
             // Vision 可能把同一高度的品名续行和库存合并。根据字符间真实空白拆列，
@@ -815,10 +849,13 @@ enum StockHistoryProcessor {
               let box = observation.boundingBox
               let part = String(original[range]).trimmingCharacters(in: .whitespacesAndNewlines)
               guard !part.isEmpty else { throw StockHistoryError.invalid("识别文字分列后为空") }
-              cells.append(StockOCRCell(text: part, confidence: Double(candidate.confidence),
-                box: CGRect(x: box.minX * Double(cg.width),
+              let partBox = CGRect(x: box.minX * Double(cg.width),
                   y: Double(top) + (1 - box.maxY) * Double(bottom - top),
-                  width: box.width * Double(cg.width), height: box.height * Double(bottom - top))))
+                  width: box.width * Double(cg.width), height: box.height * Double(bottom - top))
+              // 分列后按实际文字区域归属分块，不能沿用品名与库存合并框的中心点。
+              if partBox.midY >= Double(start), partBox.midY < Double(min(cg.height, start + block)) {
+                cells.append(StockOCRCell(text: part, confidence: Double(candidate.confidence), box: partBox))
+              }
             }
           }
         }
@@ -968,9 +1005,10 @@ enum StockHistoryProcessor {
   }
 }
 
-final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
+final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdaptivePresentationControllerDelegate {
   private let channel: FlutterMethodChannel
   private var pending: FlutterResult?
+  private var activePicker: PHPickerViewController?
   private var video = true
   private var screenshots = false
   private var crop = StockCrop.automatic
@@ -1026,7 +1064,9 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
         configuration.preferredAssetRepresentationMode = .current
         let picker = PHPickerViewController(configuration: configuration)
         picker.delegate = self
+        self.activePicker = picker
         presenter.present(picker, animated: true)
+        picker.presentationController?.delegate = self
       }
       if screenshots {
         // 相册创建时间不能从临时文件的创建时间推断；读取所选 PHAsset 需要相册授权。
@@ -1106,8 +1146,19 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
     if let error = error { Self.fail(error, result: result) } else { result(value) }
   }
   func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+    precondition(Thread.isMainThread)
+    // 滑动关闭与系统取消回调可能先后到达，同一次选择只完成一次。
+    guard activePicker === picker else { return }
+    activePicker = nil
+    if results.isEmpty {
+      // 系统可能已开始关闭选择器，此时 dismiss 的 completion 不保证调用。
+      // 取消结果必须立即返回，让 Flutter 清除加载状态，不能等待动画。
+      finish(nil)
+      picker.dismiss(animated: true)
+      return
+    }
     picker.dismiss(animated: true) {
-      guard let selection = results.first else { self.finish(nil); return }
+      let selection = results[0]
       if self.screenshots {
         self.loadScreenshots(results)
         return
@@ -1126,6 +1177,11 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
         } catch { DispatchQueue.main.async { self.finish(nil, error: error) } }
       }
     }
+  }
+  func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+    guard let picker = activePicker, presentationController.presentedViewController === picker else { return }
+    activePicker = nil
+    finish(nil)
   }
   private func loadScreenshots(_ results: [PHPickerResult]) {
     do {

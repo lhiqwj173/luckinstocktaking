@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -373,6 +374,48 @@ void main() {
     await tester.pumpAndSettle();
     expect(calls.map((call) => call.method), ['list', 'importScreenshots']);
     expect(find.text('盘点单详情'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('录屏和截图组异步取消后恢复按钮并允许再次导入', (tester) async {
+    final calls = <String>[];
+    final selections = <Completer<String?>>[];
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      calls.add(call.method);
+      if (call.method == 'list') return '[]';
+      if (call.method == 'import' || call.method == 'importScreenshots') {
+        final selection = Completer<String?>();
+        selections.add(selection);
+        return selection.future;
+      }
+      throw StateError('取消时不应创建或识别盘点单');
+    });
+    await tester.pumpWidget(const MaterialApp(home: StockHistoryPage()));
+    await tester.pumpAndSettle();
+    for (final label in ['拼接录屏', '拼接截图组']) {
+      await tester.tap(find.text(label));
+      await tester.pump();
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, '拼接录屏'))
+            .onPressed,
+        isNull,
+      );
+      selections.last.complete(null);
+      await tester.pumpAndSettle();
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      for (final button in ['拼接录屏', '拼接截图组']) {
+        expect(
+          tester
+              .widget<FilledButton>(find.widgetWithText(FilledButton, button))
+              .onPressed,
+          isNotNull,
+        );
+      }
+      expect(find.text('盘点单详情'), findsNothing);
+    }
+    expect(calls, ['list', 'import', 'importScreenshots']);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

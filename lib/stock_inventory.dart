@@ -86,7 +86,7 @@ class StockInventory {
       uncertain || parts.values.any((part) => part.uncertain);
 
   factory StockInventory.parse(String raw, {bool uncertain = false}) {
-    final labels = RegExp(r'(总库存|冷藏|冷冻)\s*[:：·]?');
+    final labels = RegExp(r'(总库存|冷藏|冷冻)\s*[:：·;；]?');
     final matches = labels.allMatches(raw).toList();
     final parts = <String, StockQuantity>{};
     if (matches.isEmpty) {
