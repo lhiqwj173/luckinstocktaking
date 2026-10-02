@@ -106,7 +106,9 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(rows[1].cells[1], "总库存：7个\n冷藏：2个\n冷冻：5个")
     XCTAssertEqual(rows[2].cells[1], "0个")
     XCTAssertTrue(rows.allSatisfy { $0.cells.count == 2 })
-    XCTAssertThrowsError(try StockTableParser.rows(cells.filter { $0.text != "3个" }))
+    let missing = try StockTableParser.rows(cells.filter { $0.text != "3个" })
+    XCTAssertEqual(missing[0].cells[1], "")
+    XCTAssertEqual(missing[0].inventoryUncertain, true)
     XCTAssertThrowsError(try StockTableParser.rows(cells.filter { $0.text != "实盘总库存" }))
   }
 
@@ -126,7 +128,25 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(rows[0].cells[1], "3盒")
     XCTAssertEqual(rows[1].cells[1], "总库存：12.1盒\n冷藏：12.1盒\n冷冻：0盒")
     XCTAssertEqual(rows[2].cells[1], "5.7盒")
-    XCTAssertThrowsError(try StockTableParser.rows(cells.filter { !$0.text.contains("12.1") && $0.text != "冷冻：0盒" }))
+    let missing = try StockTableParser.rows(cells.filter { !$0.text.contains("12.1") && $0.text != "冷冻：0盒" })
+    XCTAssertEqual(missing[1].inventoryUncertain, true)
+  }
+
+  func testPartialInventoryDoesNotRequireEveryProductToHaveQuantity() throws {
+    let url = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
+      forResource: "partial_inventory", withExtension: "png", subdirectory: "Fixtures"))
+    let image = try XCTUnwrap(UIImage(data: Data(contentsOf: url)))
+    let rows = try StockHistoryProcessor.recognize(image)
+    XCTAssertEqual(rows.count, 3)
+    XCTAssertTrue(rows[0].cells[1].contains("14"))
+    XCTAssertNil(rows[1].cells[1].range(of: "[0-9]", options: .regularExpression))
+    XCTAssertNil(rows[2].cells[1].range(of: "[0-9]", options: .regularExpression))
+    let id = UUID().uuidString
+    let record = StockHistoryDocument(schemaVersion: 2, id: id, title: "部分盘点",
+      createdAt: "2026-10-02T08:49:00Z", imageName: "\(id).png", lines: rows, reviewed: false)
+    XCTAssertNoThrow(try record.validate())
+    XCTAssertTrue(StockTableParser.blankInventory("-袋-根"))
+    XCTAssertFalse(StockTableParser.blankInventory("0袋"))
   }
 
   func testVisionRecognizesInventoryFromProvidedRecording() throws {
@@ -213,8 +233,8 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(rows.count, 2)
     XCTAssertEqual(rows[0].cells[1], "4包")
     XCTAssertEqual(rows[1].cells[1], "－箱13包")
-    XCTAssertThrowsError(try StockTableParser.rows(cells))
-    XCTAssertThrowsError(try StockTableParser.rows(cells) { _, _ in [cell("2200毫升", 500, 310)] })
+    XCTAssertEqual(try StockTableParser.rows(cells).last?.inventoryUncertain, true)
+    XCTAssertEqual(try StockTableParser.rows(cells) { _, _ in [cell("2200毫升", 500, 310)] }.last?.inventoryUncertain, true)
   }
 
   func testVisionRecognizesLastGoodsBeforePreparedMaterials() throws {

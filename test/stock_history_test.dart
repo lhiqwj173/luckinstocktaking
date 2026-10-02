@@ -116,7 +116,7 @@ void main() {
     expect(pendingChecks, 2, reason: '查看历史时仍应响应拼接快捷指令完成通知');
     expect(find.byTooltip('优化识别'), findsNothing);
     expect(automaticRecognitions, 1);
-    expect(find.text('01.30盒'), findsOneWidget);
+    expect(find.text('1.3盒'), findsOneWidget);
     await tester.enterText(find.byType(TextField).first, '已校对的盘点单');
     await tester.ensureVisible(find.text('保存修改并标记已校对'));
     await tester.tap(find.text('保存修改并标记已校对'));

@@ -3,10 +3,19 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 
+import 'stock_inventory.dart';
+
 class StockLine {
-  StockLine({required this.cells, required this.confidence});
+  StockLine({
+    required this.cells,
+    required this.confidence,
+    this.inventoryUncertain = false,
+  });
   final List<String> cells;
   final double confidence;
+  final bool inventoryUncertain;
+  StockInventory get inventory =>
+      StockInventory.parse(cells[1], uncertain: inventoryUncertain);
   String get text => cells.join(' · ');
 
   String? get reviewIssue {
@@ -18,12 +27,12 @@ class StockLine {
     )) {
       return '货号中有易混淆字符';
     }
-    final inventory = cells[1];
-    if (!RegExp(r'[0-9]').hasMatch(inventory) ||
+    final rawInventory = cells[1];
+    if (inventory.needsReview ||
         RegExp(
           r'(?:^|[:：\s])[OoIl]+(?=\s*(?:个|盒|包|箱|瓶|袋|支|份))',
           multiLine: true,
-        ).hasMatch(inventory)) {
+        ).hasMatch(rawInventory)) {
       return '库存数字待确认';
     }
     return null;
@@ -33,15 +42,27 @@ class StockLine {
     final cells = (json['cells'] as List).cast<String>();
     final confidence = (json['confidence'] as num).toDouble();
     if (cells.isEmpty ||
-        cells.any((cell) => cell.trim().isEmpty) ||
+        cells.asMap().entries.any(
+          (entry) =>
+              entry.value.trim().isEmpty &&
+              !(cells.length == 2 && entry.key == 1),
+        ) ||
         !confidence.isFinite ||
         confidence < 0 ||
         confidence > 1) {
       throw const FormatException('盘点单文字行格式无效');
     }
-    return StockLine(cells: cells, confidence: confidence);
+    return StockLine(
+      cells: cells,
+      confidence: confidence,
+      inventoryUncertain: (json['inventoryUncertain'] as bool?) ?? false,
+    );
   }
-  Map<String, dynamic> toJson() => {'cells': cells, 'confidence': confidence};
+  Map<String, dynamic> toJson() => {
+    'cells': cells,
+    'confidence': confidence,
+    'inventoryUncertain': inventoryUncertain,
+  };
 }
 
 class StockDocument {

@@ -15,6 +15,7 @@ enum StockHistoryError: LocalizedError {
 struct StockTextLine: Codable {
   var cells: [String]
   var confidence: Double
+  var inventoryUncertain: Bool? = nil
 }
 
 struct StockOCRCell {
@@ -59,6 +60,10 @@ enum StockOCRRefinement {
 }
 
 enum StockTableParser {
+  static func blankInventory(_ text: String) -> Bool {
+    let value = text.replacingOccurrences(of: "\\s+|总库存[:：·]?|冷藏[:：·]?|冷冻[:：·]?", with: "", options: .regularExpression)
+    return value.isEmpty || value.range(of: "^(?:[-－—一]+[\\p{Han}A-Za-z]{0,3})+$", options: .regularExpression) != nil
+  }
   static func splitColumnGap(_ text: String, characters: [(Range<String.Index>, CGRect)],
     stockColumnStart: CGFloat) -> [Range<String.Index>] {
     guard characters.count >= 2 else { return [text.startIndex..<text.endIndex] }
@@ -116,17 +121,16 @@ enum StockTableParser {
         (parts.map { $0.box.maxY }.max()! + names[index + 1].map { $0.box.minY }.min()!) / 2 : footer
       var stocks = body.filter { $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end }
       var inventory = stocks.map(\.text).joined(separator: "\n")
-      if inventory.range(of: "[0-9]", options: .regularExpression) == nil, let retry = retryInventory {
+      if inventory.range(of: "[0-9]", options: .regularExpression) == nil,
+        (stocks.isEmpty || !blankInventory(inventory)), let retry = retryInventory {
         stocks = try retry(start, end).filter {
           $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end
         }.sorted { $0.box.midY < $1.box.midY }
         inventory = stocks.map(\.text).joined(separator: "\n")
       }
-      guard !stocks.isEmpty, inventory.range(of: "[0-9]", options: .regularExpression) != nil else {
-        throw StockHistoryError.invalid("第 \(index + 1) 项货物（\(parts.map(\.text).joined(separator: " "))）缺少可识别的库存数量，请核对原始长图")
-      }
       return StockTextLine(cells: [parts.map(\.text).joined(separator: "\n"), inventory],
-        confidence: (parts + stocks).map(\.confidence).min()!)
+        confidence: (parts + stocks).map(\.confidence).min()!,
+        inventoryUncertain: stocks.isEmpty || (!blankInventory(inventory) && inventory.range(of: "[0-9]", options: .regularExpression) == nil))
     }
   }
 }
@@ -158,8 +162,8 @@ struct StockHistoryDocument: Codable {
           Self.date(createdAt) != nil,
           imageName == "\(id).png", !lines.isEmpty,
           (schemaVersion != 2 || lines.allSatisfy { $0.cells.count == 2 }),
-          lines.allSatisfy({ !$0.cells.isEmpty && $0.cells.allSatisfy {
-            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          lines.allSatisfy({ !$0.cells.isEmpty && $0.cells.enumerated().allSatisfy { index, text in
+            (schemaVersion == 2 && index == 1) || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
           } && $0.confidence.isFinite && (0...1).contains($0.confidence) }) else {
       throw StockHistoryError.invalid("历史盘点单格式无效，请检查本地数据")
     }
@@ -399,7 +403,7 @@ struct StockScrollCoverage {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 1
+  static let recognitionRevision = 2
   static func process(url: URL, video: Bool, crop: StockCrop, documentID: String = UUID().uuidString,
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let image: UIImage
@@ -651,14 +655,17 @@ enum StockHistoryProcessor {
         width: CGFloat(cg.width - columnX),
         height: min(CGFloat(cg.height), end.rounded(.up)) - max(0, start.rounded(.down)))
       // 短行单独放大，避开分块边缘和下面的预制物料表。只有该行真实 OCR
-      // 返回数字才接受；识别仍失败则继续抛错，不把缺失库存当作 0。
+      // 返回数字才用于数量；技术错误继续抛出，未识别的值保留状态，不填成 0。
+      var readings: [[StockOCRCell]] = []
       for (source, scale) in [(recognitionImage, 2), (cg, 2), (recognitionImage, 4)] {
         let recovered = try inventoryRow(source, crop: crop, scale: scale)
+        readings.append(recovered)
         if recovered.contains(where: { $0.text.range(of: "[0-9]", options: .regularExpression) != nil }) {
           return recovered
         }
       }
-      throw StockHistoryError.invalid("库存行放大识别仍未读到数量（长图纵向位置 \(Int(start))～\(Int(min(end, CGFloat(cg.height))))），请核对原始长图")
+      // 识别任务成功但数量不确定：保留实际 OCR 文本并标记待确认，允许部分盘点单保存。
+      return readings.max { $0.count < $1.count }!
     }
 
   }

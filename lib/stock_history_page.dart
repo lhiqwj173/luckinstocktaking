@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'stock_history.dart';
+import 'stock_inventory_view.dart';
+import 'stock_comparison.dart';
+import 'stock_comparison_page.dart';
 
 const historyInstructions =
     '1. 在瑞幸盘打开旧盘点单，使用系统录屏，从顶部缓慢滚动到底。\n'
@@ -101,6 +104,92 @@ class _StockHistoryPageState extends State<StockHistoryPage>
     }
   }
 
+  Future<void> _compare() async {
+    var baseline = _documents[1].id;
+    var target = _documents[0].id;
+    final chosen = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('对比盘点单'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                initialValue: baseline,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '基准盘点单'),
+                items: [
+                  for (final document in _documents)
+                    DropdownMenuItem(
+                      value: document.id,
+                      child: Text(
+                        document.title,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (value) => update(() => baseline = value!),
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                initialValue: target,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '对照盘点单'),
+                items: [
+                  for (final document in _documents)
+                    DropdownMenuItem(
+                      value: document.id,
+                      child: Text(
+                        document.title,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (value) => update(() => target = value!),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: baseline == target
+                  ? null
+                  : () => Navigator.pop(context, true),
+              child: const Text('查看差异'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (chosen != true || !mounted) return;
+    await _operation(() async {
+      final a = await _store.table(
+        _documents.singleWhere((document) => document.id == baseline),
+      );
+      final b = await _store.table(
+        _documents.singleWhere((document) => document.id == target),
+      );
+      final comparison = StockComparison(a, b);
+      if (mounted) {
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute(
+            builder: (_) => StockComparisonPage(
+              baseline: a,
+              target: b,
+              comparison: comparison,
+            ),
+          ),
+        );
+      }
+      final documents = await _store.load();
+      if (mounted) setState(() => _documents = documents);
+    });
+  }
+
   Future<void> _delete(StockDocument document) async {
     if (_busy) return;
     final confirmed = await showDialog<bool>(
@@ -141,6 +230,13 @@ class _StockHistoryPageState extends State<StockHistoryPage>
       appBar: AppBar(
         title: const Text('旧盘点单'),
         actions: [
+          IconButton(
+            onPressed: _busy || !_ready || _documents.length < 2
+                ? null
+                : _compare,
+            icon: const Icon(Icons.compare_arrows),
+            tooltip: '对比盘点单',
+          ),
           IconButton(
             onPressed: _busy ? null : _load,
             icon: const Icon(Icons.refresh),
@@ -420,8 +516,8 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
     name.dispose();
     inventory.dispose();
     if (result != true || !mounted) return;
-    if (cells.any((cell) => cell.isEmpty)) {
-      setState(() => _error = '名称和库存不能为空，请重新校对');
+    if (cells.first.isEmpty) {
+      setState(() => _error = '货物名称不能为空，请重新校对');
       return;
     }
     setState(() {
@@ -602,7 +698,8 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 SelectableText(entry.value.cells[0]),
-                                if (entry.value.reviewIssue != null)
+                                if (entry.value.reviewIssue != null &&
+                                    entry.value.reviewIssue != '库存数字待确认')
                                   Text(
                                     entry.value.reviewIssue!,
                                     style: TextStyle(
@@ -618,7 +715,9 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                             child: Row(
                               children: [
                                 Expanded(
-                                  child: SelectableText(entry.value.cells[1]),
+                                  child: StockInventoryView(
+                                    inventory: entry.value.inventory,
+                                  ),
                                 ),
                                 IconButton(
                                   onPressed: _saving
