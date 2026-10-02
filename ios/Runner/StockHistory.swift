@@ -292,6 +292,8 @@ enum StockHistoryStorage {
 
 struct StockCrop {
   static let automatic = StockCrop(top: 0.18, bottom: 0.10)
+  // 截图的重叠通常只有一行；只排除导航栏和底部安全区域，不能沿用录屏的大幅裁剪。
+  static let screenshots = StockCrop(top: 0.10, bottom: 0.04)
   let top: Double
   let bottom: Double
   func validate() throws {
@@ -317,10 +319,14 @@ struct StockGrayFrame {
   let smooth: [UInt8]
   let width: Int
   let height: Int
-  init(_ image: CGImage) throws {
+  let contentTop: Int
+  init(_ image: CGImage, contentTop: Int = 0) throws {
     let width = 192
     // 保留原始行高，避免竖向缩小后文字采样相位改变，造成虚假的接缝误差。
     let height = image.height
+    guard height >= 100, contentTop >= 0, contentTop < height - 6 else {
+      throw StockHistoryError.invalid("拼接正文区域无效")
+    }
     var bytes = [UInt8](repeating: 0, count: width * height)
     let rendered = bytes.withUnsafeMutableBytes { buffer -> Bool in
       guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
@@ -341,14 +347,16 @@ struct StockGrayFrame {
         blurred[y * width + x] = UInt8(sum / 7)
       }
     }
-    self.width = width; self.height = height; pixels = bytes; smooth = blurred
+    self.width = width; self.height = height; self.contentTop = contentTop
+    pixels = bytes; smooth = blurred
   }
 
   func error(with other: StockGrayFrame, shift: Int, smoothed: Bool = false) -> Double {
     precondition(width == other.width && height == other.height)
     let aPixels = smoothed ? smooth : pixels
     let bPixels = smoothed ? other.smooth : other.pixels
-    let start = max(0, -shift)
+    // 固定表头不随正文滚动。比较双方真正的正文交集，而不是整段重叠画面。
+    let start = max(max(0, -shift), max(other.contentTop, contentTop - shift))
     let end = min(height, height - shift)
     var sum = 0.0; var count = 0
     // 粗匹配稀疏采样；精匹配逐行比较，避免采样周期让不同位移得到相同误差。
@@ -360,7 +368,8 @@ struct StockGrayFrame {
         if min(a, b) < 220 { sum += Double(abs(a - b)); count += 1 }
       }
     }
-    return count >= 100 ? sum / Double(count) : .infinity
+    // 粗匹配每六行只取一行，样本下限同步换算；精匹配仍须至少 100 个墨迹采样点。
+    return count >= max(1, 100 / rowStride) ? sum / Double(count) : .infinity
   }
 
   func displacement(to next: StockGrayFrame, maximumShiftRatio: Double = 0.55) throws -> Int {
@@ -428,17 +437,19 @@ struct StockScreenshotInput {
 
 enum StockHistoryProcessor {
   static let recognitionRevision = 2
-  static func processScreenshots(_ inputs: [StockScreenshotInput], crop: StockCrop = .automatic,
+  static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
-    let image = try stitchScreenshots(inputs, crop: crop, progress: progress)
+    let image = try stitchScreenshots(inputs, progress: progress)
     let lines = try recognize(image, progress: progress)
     progress("正在保存长截图与识别结果")
     return try StockHistoryStorage.create(image: image, lines: lines)
   }
 
-  static func stitchScreenshots(_ inputs: [StockScreenshotInput], crop: StockCrop = .automatic,
+  // 明确传入裁剪时处理没有固定表头的原始图像；默认自动定位盘点截图中的固定表头。
+  static func stitchScreenshots(_ inputs: [StockScreenshotInput], crop: StockCrop? = nil,
     progress: (String) -> Void = { _ in }) throws -> UIImage {
-    try crop.validate()
+    let activeCrop = crop ?? .screenshots
+    try activeCrop.validate()
     let sorted = try StockScreenshotInput.ordered(inputs)
     var pieces: [CGImage] = []
     var previous: StockGrayFrame?
@@ -451,8 +462,11 @@ enum StockHistoryProcessor {
           raw.width * raw.height <= 40_000_000 else {
           throw StockHistoryError.invalid("第 \(index + 1) 张截图无法读取、方向不正确或尺寸过大")
         }
-        let frame = try crop.apply(raw)
-        let gray = try StockGrayFrame(frame)
+        let frame = try activeCrop.apply(raw)
+        let bodyTop: Int
+        if crop == nil { bodyTop = try screenshotBodyTop(frame) }
+        else { bodyTop = 0 }
+        let gray = try StockGrayFrame(frame, contentTop: bodyTop)
         if let old = previous {
           guard width == frame.width, old.height == frame.height else {
             throw StockHistoryError.invalid("截图尺寸不一致，请选择同一手机、同一方向的原始截图")
@@ -486,6 +500,51 @@ enum StockHistoryProcessor {
       }
     }
     return renderPieces(pieces, width: width, height: totalHeight)
+  }
+
+  static func screenshotBodyTop(_ image: CGImage) throws -> Int {
+    // 首张截图表头随基本信息向下移动，后续截图表头固定在顶部，须逐张定位。
+    let height = min(image.height, 900)
+    guard let tile = image.cropping(to: CGRect(x: 0, y: 0, width: image.width, height: height)) else {
+      throw StockHistoryError.invalid("无法读取截图表头区域")
+    }
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.recognitionLanguages = ["zh-Hans", "en-US"]
+    request.usesLanguageCorrection = false
+    try VNImageRequestHandler(cgImage: textImage(tile), options: [:]).perform([request])
+    guard let results = request.results else { throw StockHistoryError.invalid("截图表头识别未返回结果") }
+    var nameHeaders: [CGRect] = []
+    var stockHeaders: [CGRect] = []
+    for observation in results {
+      guard let candidate = observation.topCandidates(1).first else {
+        throw StockHistoryError.invalid("截图表头识别候选为空")
+      }
+      let text = StockOCRRefinement.compact(candidate.string)
+      let isName = text.contains("货物规格名称")
+      let isStock = text.contains("实盘总库存")
+      if isName || isStock {
+        let box = observation.boundingBox
+        let rect = CGRect(x: box.minX * Double(image.width),
+          y: (1 - box.maxY) * Double(height),
+          width: box.width * Double(image.width), height: box.height * Double(height))
+        if isName { nameHeaders.append(rect) }
+        if isStock { stockHeaders.append(rect) }
+      }
+    }
+    // 末张截图还可能出现「预制物料」的库存表头，只配对同一行的货物名称与库存标题。
+    let headerPairs = nameHeaders.flatMap { name in
+      stockHeaders.filter { abs($0.midY - name.midY) < max($0.height, name.height) * 1.25 }
+        .map { (name, $0) }
+    }
+    guard let pair = headerPairs.min(by: { max($0.0.maxY, $0.1.maxY) < max($1.0.maxY, $1.1.maxY) }) else {
+      throw StockHistoryError.invalid("无法定位截图的货物表头，请选择保留两列表头的原始截图")
+    }
+    let bodyTop = Int(ceil(max(pair.0.maxY + pair.0.height, pair.1.maxY + pair.1.height)))
+    guard bodyTop > 0, bodyTop < image.height - 100 else {
+      throw StockHistoryError.invalid("截图货物正文区域过小，无法拼接")
+    }
+    return bodyTop
   }
   static func process(url: URL, video: Bool, crop: StockCrop, documentID: String = UUID().uuidString,
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
@@ -1047,7 +1106,7 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
           }
           let document: StockHistoryDocument
           if let screenshots = screenshots {
-            document = try StockHistoryProcessor.processScreenshots(screenshots, crop: crop, progress: progress)
+            document = try StockHistoryProcessor.processScreenshots(screenshots, progress: progress)
           } else {
             document = try StockHistoryProcessor.process(url: url, video: video, crop: crop, progress: progress)
           }

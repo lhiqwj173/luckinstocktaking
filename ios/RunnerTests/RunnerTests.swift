@@ -96,6 +96,48 @@ class RunnerTests: XCTestCase {
     ], crop: StockCrop(top: 0, bottom: 0)))
   }
 
+  func testRealScreenshotGroupIgnoresPinnedHeadersAndRetainsShortOverlaps() throws {
+    let cases = [
+      ("screenshot_first", "screenshot_second", 1233),
+      ("screenshot_sparse_first", "screenshot_sparse_second", 1240),
+      ("screenshot_short_first", "screenshot_short_second", 1315),
+      ("screenshot_footer_first", "screenshot_footer_second", 1265)
+    ]
+    for (firstName, secondName, expectedShift) in cases {
+      let firstURL = try XCTUnwrap(Bundle(for: Self.self).url(
+        forResource: firstName, withExtension: "PNG", subdirectory: "Fixtures"))
+      let secondURL = try XCTUnwrap(Bundle(for: Self.self).url(
+        forResource: secondName, withExtension: "PNG", subdirectory: "Fixtures"))
+      let first = try StockCrop.screenshots.apply(XCTUnwrap(UIImage(contentsOfFile: firstURL.path)?.cgImage))
+      let second = try StockCrop.screenshots.apply(XCTUnwrap(UIImage(contentsOfFile: secondURL.path)?.cgImage))
+      let firstTop = try StockHistoryProcessor.screenshotBodyTop(first)
+      let secondTop = try StockHistoryProcessor.screenshotBodyTop(second)
+      XCTAssertLessThan(secondTop, 220, "应定位货物表头，不能被下方预制物料的表头干扰")
+      if firstName == "screenshot_first" {
+        XCTAssertGreaterThan(firstTop, 500)
+        XCTAssertLessThan(secondTop, 220)
+        let oldFirst = try StockGrayFrame(StockCrop.automatic.apply(
+          XCTUnwrap(UIImage(contentsOfFile: firstURL.path)?.cgImage)))
+        let oldSecond = try StockGrayFrame(StockCrop.automatic.apply(
+          XCTUnwrap(UIImage(contentsOfFile: secondURL.path)?.cgImage)))
+        XCTAssertThrowsError(try oldFirst.displacement(to: oldSecond, maximumShiftRatio: 0.90))
+      }
+      let a = try StockGrayFrame(first, contentTop: firstTop)
+      let b = try StockGrayFrame(second, contentTop: secondTop)
+      XCTAssertEqual(try a.displacement(to: b, maximumShiftRatio: 0.90), expectedShift)
+      let stitched = try StockHistoryProcessor.stitchScreenshots([
+        StockScreenshotInput(url: secondURL, capturedAt: Date(timeIntervalSince1970: 20)),
+        StockScreenshotInput(url: firstURL, capturedAt: Date(timeIntervalSince1970: 10))
+      ])
+      XCTAssertEqual(stitched.size, CGSize(width: first.width, height: first.height + expectedShift))
+      if firstName == "screenshot_first" {
+        let rows = try StockHistoryProcessor.recognize(stitched)
+        XCTAssertEqual(rows.count, 16)
+        XCTAssertEqual(rows.filter { $0.cells[0].contains("GS00804-01") }.count, 1)
+      }
+    }
+  }
+
   func testOCRContrastSuppressesFaintWatermarkAndPreservesDarkInk() throws {
     let format = UIGraphicsImageRendererFormat()
     format.scale = 1
