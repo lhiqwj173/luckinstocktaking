@@ -56,6 +56,7 @@ void main() {
     });
     var consumed = false;
     var pendingChecks = 0;
+    var automaticRecognitions = 0;
     Map<String, dynamic>? saved;
     messenger.setMockMethodCallHandler(
       const MethodChannel('com.luckinstocktaking/catalog'),
@@ -71,11 +72,13 @@ void main() {
           consumed = true;
           return jsonEncode(record());
         case 'table':
+          automaticRecognitions++;
           final table = record();
           table['schemaVersion'] = 2;
+          table['recognitionRevision'] = 1;
           table['lines'] = [
             {
-              'cells': ['椰乳', '01.20盒'],
+              'cells': ['椰乳', '01.30盒'],
               'confidence': .72,
             },
             {
@@ -100,6 +103,8 @@ void main() {
     expect(find.text('货物规格名称'), findsOneWidget);
     expect(find.text('实盘总库存'), findsOneWidget);
     expect(find.text('查看长图'), findsOneWidget);
+    expect(find.text('需重点核对'), findsNothing);
+    expect(find.text('库存数字待确认'), findsNothing);
     tester.binding.channelBuffers.push(
       StockHistoryStore.channel.name,
       const StandardMethodCodec().encodeMethodCall(
@@ -109,12 +114,16 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(pendingChecks, 2, reason: '查看历史时仍应响应拼接快捷指令完成通知');
+    expect(find.byTooltip('优化识别'), findsNothing);
+    expect(automaticRecognitions, 1);
+    expect(find.text('01.30盒'), findsOneWidget);
     await tester.enterText(find.byType(TextField).first, '已校对的盘点单');
     await tester.ensureVisible(find.text('保存修改并标记已校对'));
     await tester.tap(find.text('保存修改并标记已校对'));
     await tester.pumpAndSettle();
     expect(saved!['title'], '已校对的盘点单');
     expect(saved!['reviewed'], true);
+    expect(saved!['recognitionRevision'], 1);
     expect((saved!['lines'] as List).length, 2);
     expect(find.text('盘点单详情'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
@@ -170,6 +179,35 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  test('低置信度品名不标记为错误，库存零值及混合单位均保留', () {
+    for (final inventory in ['0个', '14个', '2捆-个', '-箱13包']) {
+      final line = StockLine(
+        cells: ['CURTA塑料冷水壶\nGS00712-01', inventory],
+        confidence: .2,
+      );
+      expect(line.reviewIssue, isNull);
+      expect(line.confidence, .2);
+    }
+  });
+
+  test('只为货号和库存中的明确数字字符疑点提示原因', () {
+    expect(
+      StockLine(cells: ['冷水壶\nGS007I2-01', '14个'], confidence: .9).reviewIssue,
+      '货号中有易混淆字符',
+    );
+    expect(
+      StockLine(
+        cells: ['冷水壶\nGS00712-01', '总库存：O个\n冷藏：0个'],
+        confidence: .9,
+      ).reviewIssue,
+      '库存数字待确认',
+    );
+    expect(
+      StockLine(cells: ['冷水壶\nGS00712-01', 'O个'], confidence: .9).reviewIssue,
+      '库存数字待确认',
+    );
+  });
+
   test('往返保留重复行、原始数量、置信度及导入时间', () {
     final document = StockDocument.fromJson(record());
     final decoded = StockDocument.fromJson(
@@ -186,6 +224,37 @@ void main() {
     expect(edited.id, document.id);
     expect(edited.title, '修正单据');
     expect(edited.reviewed, true);
+  });
+
+  test('未校对历史自动检查算法版本，已校对内容直接保留', () async {
+    final data = {
+      ...record(),
+      'schemaVersion': 2,
+      'lines': [
+        {
+          'cells': ['奶油', '13包'],
+          'confidence': .5,
+        },
+      ],
+    };
+    var requests = 0;
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      expect(call.method, 'table');
+      requests++;
+      return jsonEncode({...data, 'recognitionRevision': 1});
+    });
+    final upgraded = await StockHistoryStore().table(
+      StockDocument.fromJson(data),
+    );
+    expect(requests, 1);
+    expect(upgraded.recognitionRevision, 1);
+    expect(
+      upgraded.edited('已校对', upgraded.lines).toJson()['recognitionRevision'],
+      1,
+    );
+    final reviewed = StockDocument.fromJson({...data, 'reviewed': true});
+    expect(await StockHistoryStore().table(reviewed), same(reviewed));
+    expect(requests, 1);
   });
 
   test('全文搜索覆盖单据和数字，多关键词必须同时命中', () {

@@ -144,6 +144,52 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(straw.cells[1].contains("2"))
   }
 
+  func testRecognitionRevisionAutomaticallyUpgradesOnlyUnreviewedHistory() throws {
+    let id = UUID().uuidString
+    let legacy = StockHistoryDocument(schemaVersion: 2, id: id,
+      title: "历史单据", createdAt: "2026-10-01T02:30:00Z", imageName: "\(id).png",
+      lines: [StockTextLine(cells: ["奶油", "13包"], confidence: 0.5)], reviewed: false)
+    XCTAssertTrue(legacy.needsRecognition)
+    var current = legacy
+    current.recognitionRevision = StockHistoryProcessor.recognitionRevision
+    XCTAssertFalse(current.needsRecognition)
+    var reviewed = legacy
+    reviewed.reviewed = true
+    XCTAssertFalse(reviewed.needsRecognition)
+    let roundTrip = try JSONDecoder().decode(StockHistoryDocument.self, from: JSONEncoder().encode(current))
+    XCTAssertFalse(roundTrip.needsRecognition)
+  }
+
+  func testRefinementRequiresAgreementAndUsesMeasuredConfidence() {
+    let box = CGRect(x: 100, y: 100, width: 180, height: 24)
+    let original = StockOCRCell(text: "GS007I2-01", confidence: 0.4, box: box)
+    let raw = StockOCRCell(text: "GS00712-01", confidence: 0.94, box: box)
+    let clean = StockOCRCell(text: "GS00712-01", confidence: 0.87, box: box)
+    let corrected = StockOCRRefinement.resolve(original, raw: raw, clean: clean, inventory: false)
+    XCTAssertEqual(corrected.text, "GS00712-01")
+    XCTAssertEqual(corrected.confidence, 0.87)
+    XCTAssertEqual(corrected.box, box)
+    let disagreement = StockOCRCell(text: "GS00713-01", confidence: 0.99, box: box)
+    XCTAssertEqual(StockOCRRefinement.resolve(original, raw: raw, clean: disagreement, inventory: false).text, original.text)
+    XCTAssertEqual(StockOCRRefinement.resolve(original, raw: nil, clean: clean, inventory: false).confidence, 0.4)
+    let smallGain = StockOCRCell(text: "GS00712-01", confidence: 0.42, box: box)
+    XCTAssertEqual(StockOCRRefinement.resolve(original, raw: raw, clean: smallGain, inventory: false).text, original.text)
+  }
+
+  func testRefinementCannotBorrowAnotherRowOrReplaceInventoryWithNonNumericText() {
+    let box = CGRect(x: 500, y: 100, width: 100, height: 24)
+    let original = StockOCRCell(text: "13包", confidence: 0.4, box: box)
+    let nextRow = StockOCRCell(text: "18包", confidence: 0.99,
+      box: CGRect(x: 500, y: 240, width: 100, height: 24))
+    let fragment = StockOCRCell(text: "3包", confidence: 0.99,
+      box: CGRect(x: 570, y: 100, width: 30, height: 24))
+    XCTAssertNil(StockOCRRefinement.match(original, in: [nextRow, fragment]))
+    let clear = StockOCRCell(text: "13包", confidence: 0.9, box: box)
+    XCTAssertEqual(StockOCRRefinement.match(original, in: [nextRow, clear])?.text, "13包")
+    let invalid = StockOCRCell(text: "弘", confidence: 0.99, box: box)
+    XCTAssertEqual(StockOCRRefinement.resolve(original, raw: invalid, clean: invalid, inventory: true).text, "13包")
+  }
+
   func testMissingLastInventoryIsRetriedInsideGoodsSectionOnly() throws {
     func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
       StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))

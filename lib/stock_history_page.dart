@@ -491,7 +491,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
             const SizedBox(height: 12),
             Text(
               _document.schemaVersion == 2
-                  ? '识别结果已自动保存。请核对品名、数量和单位；点击铅笔可修正，完成后标记已校对。'
+                  ? '识别结果已保存，可直接搜索查询。发现错误时点击铅笔修改，也可查看原图对照。'
                   : '原始长图已保留，货物表尚未整理完成。可切换查看长图核对。',
             ),
             if (_error != null)
@@ -591,9 +591,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                     for (final entry in matches)
                       TableRow(
                         decoration: BoxDecoration(
-                          color: entry.value.confidence < .8
-                              ? theme.colorScheme.errorContainer
-                              : entry.key.isEven
+                          color: entry.key.isEven
                               ? theme.colorScheme.surfaceContainerLow
                               : theme.colorScheme.surface,
                         ),
@@ -604,10 +602,13 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 SelectableText(entry.value.cells[0]),
-                                if (entry.value.confidence < .8)
-                                  const Text(
-                                    '需重点核对',
-                                    style: TextStyle(fontSize: 11),
+                                if (entry.value.reviewIssue != null)
+                                  Text(
+                                    entry.value.reviewIssue!,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: theme.colorScheme.error,
+                                    ),
                                   ),
                               ],
                             ),

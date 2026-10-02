@@ -9,6 +9,26 @@ class StockLine {
   final double confidence;
   String get text => cells.join(' · ');
 
+  String? get reviewIssue {
+    if (cells.length != 2) return null;
+    final codes = RegExp(r'[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}')
+        .allMatches(cells[0]);
+    if (codes.any(
+      (match) => RegExp(r'[OoIl]').hasMatch(match.group(0)!.substring(2)),
+    )) {
+      return '货号中有易混淆字符';
+    }
+    final inventory = cells[1];
+    if (!RegExp(r'[0-9]').hasMatch(inventory) ||
+        RegExp(
+          r'(?:^|[:：\s])[OoIl]+(?=\s*(?:个|盒|包|箱|瓶|袋|支|份))',
+          multiLine: true,
+        ).hasMatch(inventory)) {
+      return '库存数字待确认';
+    }
+    return null;
+  }
+
   factory StockLine.fromJson(Map<String, dynamic> json) {
     final cells = (json['cells'] as List).cast<String>();
     final confidence = (json['confidence'] as num).toDouble();
@@ -33,6 +53,7 @@ class StockDocument {
     required this.lines,
     required this.reviewed,
     this.schemaVersion = 1,
+    this.recognitionRevision = 0,
   });
   final String id;
   final String title;
@@ -41,6 +62,7 @@ class StockDocument {
   final List<StockLine> lines;
   final bool reviewed;
   final int schemaVersion;
+  final int recognitionRevision;
 
   factory StockDocument.fromJson(Map<String, dynamic> json) {
     if (json['schemaVersion'] != 1 && json['schemaVersion'] != 2) {
@@ -58,6 +80,7 @@ class StockDocument {
           .toList(),
       reviewed: json['reviewed'] as bool,
       schemaVersion: json['schemaVersion'] as int,
+      recognitionRevision: (json['recognitionRevision'] as int?) ?? 0,
     );
     document.validate();
     return document;
@@ -65,6 +88,7 @@ class StockDocument {
 
   void validate() {
     if ((schemaVersion != 1 && schemaVersion != 2) ||
+        recognitionRevision < 0 ||
         !RegExp(
           r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
         ).hasMatch(id) ||
@@ -89,6 +113,7 @@ class StockDocument {
     lines: lines,
     reviewed: true,
     schemaVersion: schemaVersion,
+    recognitionRevision: recognitionRevision,
   );
 
   bool matches(String query) {
@@ -100,6 +125,7 @@ class StockDocument {
 
   Map<String, dynamic> toJson() => {
     'schemaVersion': schemaVersion,
+    'recognitionRevision': recognitionRevision,
     'id': id,
     'title': title,
     'createdAt': createdAt.toUtc().toIso8601String(),
@@ -113,7 +139,7 @@ class StockHistoryStore {
   static const channel = MethodChannel('com.luckinstocktaking/history');
   static final changes = ValueNotifier<int>(0);
   Future<StockDocument> table(StockDocument document) async {
-    if (document.schemaVersion == 2) return document;
+    if (document.schemaVersion == 2 && document.reviewed) return document;
     final json = await channel.invokeMethod<String>('table', document.id);
     if (json == null) throw StateError('无法整理盘点表');
     final result = StockDocument.fromJson(

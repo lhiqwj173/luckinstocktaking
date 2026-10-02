@@ -23,6 +23,41 @@ struct StockOCRCell {
   let box: CGRect
 }
 
+enum StockOCRRefinement {
+  static func compact(_ text: String) -> String {
+    text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+  }
+  static func match(_ original: StockOCRCell, in candidates: [StockOCRCell]) -> StockOCRCell? {
+    let area = original.box.width * original.box.height
+    precondition(area > 0, "复识别原始文字区域必须非空")
+    return candidates.filter { candidate in
+      let intersection = original.box.intersection(candidate.box)
+      guard !intersection.isNull else { return false }
+      let overlap = intersection.width * intersection.height
+      let candidateArea = candidate.box.width * candidate.box.height
+      return overlap / area >= 0.6 && overlap / candidateArea >= 0.6
+    }.max { $0.confidence < $1.confidence }
+  }
+  static func resolve(_ original: StockOCRCell, raw: StockOCRCell?, clean: StockOCRCell?,
+    inventory: Bool) -> StockOCRCell {
+    guard let raw = raw, let clean = clean,
+      compact(raw.text) == compact(clean.text),
+      min(raw.confidence, clean.confidence) > original.confidence + 0.05 else { return original }
+    let text = compact(raw.text)
+    if inventory {
+      guard text.range(of: "[0-9]", options: .regularExpression) != nil else { return original }
+    } else if compact(original.text).range(of: "[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}",
+      options: .regularExpression) != nil {
+      guard compact(original.text).range(of: "^[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}$",
+        options: .regularExpression) != nil else { return original }
+      guard text.range(of: "^[Gg][Ss][0-9]{4,8}[-－—][0-9]{2,3}$",
+        options: .regularExpression) != nil else { return original }
+    }
+    // 只采用两次真实识别中较低的评分，不人为加分；坐标仍用于原来的行配对。
+    return StockOCRCell(text: raw.text, confidence: min(raw.confidence, clean.confidence), box: original.box)
+  }
+}
+
 enum StockTableParser {
   static func splitColumnGap(_ text: String, characters: [(Range<String.Index>, CGRect)],
     stockColumnStart: CGFloat) -> [Range<String.Index>] {
@@ -104,6 +139,11 @@ struct StockHistoryDocument: Codable {
   let imageName: String
   var lines: [StockTextLine]
   var reviewed: Bool
+  var recognitionRevision: Int? = nil
+
+  var needsRecognition: Bool {
+    schemaVersion != 2 || (!reviewed && (recognitionRevision ?? 0) < StockHistoryProcessor.recognitionRevision)
+  }
 
   static func date(_ text: String) -> Date? {
     let formatter = ISO8601DateFormatter()
@@ -113,6 +153,7 @@ struct StockHistoryDocument: Codable {
 
   func validate() throws {
     guard (schemaVersion == 1 || schemaVersion == 2), UUID(uuidString: id) != nil,
+          (recognitionRevision == nil || recognitionRevision! >= 0),
           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           Self.date(createdAt) != nil,
           imageName == "\(id).png", !lines.isEmpty,
@@ -181,7 +222,7 @@ enum StockHistoryStorage {
     let record = StockHistoryDocument(schemaVersion: 2, id: id,
       title: "旧盘点单 \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short))",
       createdAt: ISO8601DateFormatter().string(from: Date()), imageName: "\(id).png",
-      lines: lines, reviewed: false)
+      lines: lines, reviewed: false, recognitionRevision: StockHistoryProcessor.recognitionRevision)
     try record.validate()
     guard let png = image.pngData() else { throw StockHistoryError.invalid("无法生成盘点单长截图") }
     let staging = try root().appendingPathComponent(".\(id)", isDirectory: true)
@@ -358,6 +399,7 @@ struct StockScrollCoverage {
 }
 
 enum StockHistoryProcessor {
+  static let recognitionRevision = 1
   static func process(url: URL, video: Bool, crop: StockCrop, documentID: String = UUID().uuidString,
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let image: UIImage
@@ -602,6 +644,7 @@ enum StockHistoryProcessor {
         }
       }
     }
+    cells = try refine(cells, original: cg, clean: recognitionImage, columnX: columnX, progress: progress)
     return try StockTableParser.rows(cells) { start, end in
       progress("正在放大复核未识别的库存行")
       let crop = CGRect(x: CGFloat(columnX), y: max(0, start.rounded(.down)),
@@ -618,6 +661,49 @@ enum StockHistoryProcessor {
       throw StockHistoryError.invalid("库存行放大识别仍未读到数量（长图纵向位置 \(Int(start))～\(Int(min(end, CGFloat(cg.height))))），请核对原始长图")
     }
 
+  }
+
+  static func refine(_ cells: [StockOCRCell], original: CGImage, clean: CGImage,
+    columnX: Int, progress: (String) -> Void) throws -> [StockOCRCell] {
+    guard original.width == clean.width, original.height == clean.height,
+      columnX > 0, columnX < original.width else { throw StockHistoryError.invalid("复识别图像尺寸或列位置无效") }
+    guard let header = cells.filter({ StockOCRRefinement.compact($0.text).contains("实盘总库存") })
+      .min(by: { $0.box.minY < $1.box.minY }) else { throw StockHistoryError.invalid("复识别缺少库存表头") }
+    let footer = cells.filter { cell in
+      cell.box.minY > header.box.maxY && ["预制物料信息", "其他信息", "历史记录"]
+        .contains { StockOCRRefinement.compact(cell.text).contains($0) }
+    }.map { $0.box.minY }.min() ?? CGFloat(original.height)
+    var output = cells
+    for start in stride(from: 0, to: original.height, by: 1800) {
+      for inventory in [false, true] {
+        let indices = cells.indices.filter { index in
+          let cell = cells[index]
+          return cell.confidence < 0.8 && cell.box.height >= 8 &&
+            cell.box.midY > header.box.maxY && cell.box.midY < footer &&
+            cell.box.midY >= CGFloat(start) && cell.box.midY < CGFloat(start + 1800) &&
+            (cell.box.minX >= CGFloat(columnX)) == inventory
+        }
+        if indices.isEmpty { continue }
+        try autoreleasepool {
+          progress("正在优化\(inventory ? "库存" : "品名及货号")识别 · \(start / 1800 + 1)")
+          let top = max(header.box.maxY, indices.map { cells[$0].box.minY }.min()! - 12).rounded(.down)
+          let bottom = min(footer, indices.map { cells[$0].box.maxY }.max()! + 12).rounded(.up)
+          let left = inventory ? CGFloat(columnX) : max(0, indices.map { cells[$0].box.minX }.min()! - 12).rounded(.down)
+          let right = inventory ? CGFloat(original.width) : min(CGFloat(columnX),
+            indices.map { cells[$0].box.maxX }.max()! + 12).rounded(.up)
+          let crop = CGRect(x: left, y: top, width: right - left, height: bottom - top)
+          let raw = try inventoryRow(original, crop: crop, scale: 2)
+          let enhanced = try inventoryRow(clean, crop: crop, scale: 2)
+          for index in indices {
+            if !crop.contains(cells[index].box) { continue }
+            output[index] = StockOCRRefinement.resolve(cells[index],
+              raw: StockOCRRefinement.match(cells[index], in: raw),
+              clean: StockOCRRefinement.match(cells[index], in: enhanced), inventory: inventory)
+          }
+        }
+      }
+    }
+    return output
   }
 
   static func inventoryRow(_ source: CGImage, crop: CGRect, scale: Int) throws -> [StockOCRCell] {
@@ -716,16 +802,18 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
           let original = try JSONDecoder().decode(StockHistoryDocument.self, from: Data(contentsOf: url))
           try original.validate()
           guard original.id == id else { throw StockHistoryError.invalid("盘点单标识不一致") }
-          if original.schemaVersion == 2 { value = try original.json() }
+          if !original.needsRecognition { value = try original.json() }
           else {
             guard let image = UIImage(data: try StockHistoryStorage.image(id)) else {
               throw StockHistoryError.invalid("历史长图无法读取")
             }
             let rows = try StockHistoryProcessor.recognize(image)
             let table = StockHistoryDocument(schemaVersion: 2, id: original.id, title: original.title,
-              createdAt: original.createdAt, imageName: original.imageName, lines: rows, reviewed: false)
-            let backup = url.deletingLastPathComponent().appendingPathComponent("legacy-recognized-lines.json")
-            if !FileManager.default.fileExists(atPath: backup.path) {
+              createdAt: original.createdAt, imageName: original.imageName, lines: rows, reviewed: false,
+              recognitionRevision: StockHistoryProcessor.recognitionRevision)
+            let backup = url.deletingLastPathComponent().appendingPathComponent(
+              original.schemaVersion == 1 ? "legacy-recognized-lines.json" : "before-refinement.json")
+            if original.schemaVersion == 2 || !FileManager.default.fileExists(atPath: backup.path) {
               try JSONEncoder().encode(original).write(to: backup, options: .atomic)
             }
             try StockHistoryStorage.save(table.json())
