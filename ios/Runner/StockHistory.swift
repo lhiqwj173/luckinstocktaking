@@ -359,7 +359,7 @@ struct StockScrollCoverage {
 
 enum StockHistoryProcessor {
   static func process(url: URL, video: Bool, crop: StockCrop, documentID: String = UUID().uuidString,
-    progress: (String) -> Void = { _ in }) throws -> StockHistoryDocument {
+    progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let image: UIImage
     if video {
       image = try stitch(url: url, crop: crop, progress: progress)
@@ -486,7 +486,7 @@ enum StockHistoryProcessor {
     }
   }
 
-  static func recognize(_ image: UIImage, progress: (String) -> Void = { _ in }) throws -> [StockTextLine] {
+  static func recognize(_ image: UIImage, progress: @escaping (String) -> Void = { _ in }) throws -> [StockTextLine] {
     guard let cg = image.cgImage else { throw StockHistoryError.invalid("无法读取截图像素") }
     let recognitionImage = try textImage(cg)
     var cells: [StockOCRCell] = []
