@@ -67,6 +67,35 @@ class RunnerTests: XCTestCase {
     XCTAssertThrowsError(try coverage.advance(by: -160))
   }
 
+  func testScreenshotTimestampOrderingAndOverlappingStitch() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    addTeardownBlock { try FileManager.default.removeItem(at: directory) }
+    let source = pattern()
+    let firstURL = directory.appendingPathComponent("first.png")
+    let lastURL = directory.appendingPathComponent("last.png")
+    let first = UIImage(cgImage: source.cropping(to: CGRect(x: 0, y: 0, width: 192, height: 450))!)
+    let last = UIImage(cgImage: source.cropping(to: CGRect(x: 0, y: 380, width: 192, height: 450))!)
+    try XCTUnwrap(first.pngData()).write(to: firstURL)
+    try XCTUnwrap(last.pngData()).write(to: lastURL)
+    let earlier = StockScreenshotInput(url: firstURL, capturedAt: Date(timeIntervalSince1970: 10))
+    let later = StockScreenshotInput(url: lastURL, capturedAt: Date(timeIntervalSince1970: 20))
+    XCTAssertEqual(try StockScreenshotInput.ordered([later, earlier]).map(\.url), [firstURL, lastURL])
+    // 选择顺序相反，且滚动超过视频匹配的 55% 范围，仍应按时间正确拼接。
+    let stitched = try StockHistoryProcessor.stitchScreenshots([later, earlier], crop: StockCrop(top: 0, bottom: 0))
+    XCTAssertEqual(stitched.size, CGSize(width: 192, height: 830))
+    let expected = try StockGrayFrame(source.cropping(to: CGRect(x: 0, y: 0, width: 192, height: 830))!)
+    XCTAssertLessThan(try StockGrayFrame(XCTUnwrap(stitched.cgImage)).error(with: expected, shift: 0), 3)
+    XCTAssertThrowsError(try StockScreenshotInput.ordered([earlier]))
+    XCTAssertThrowsError(try StockScreenshotInput.ordered([earlier, earlier]))
+    XCTAssertThrowsError(try StockScreenshotInput.ordered([
+      earlier, StockScreenshotInput(url: lastURL, capturedAt: earlier.capturedAt)]))
+    XCTAssertThrowsError(try StockHistoryProcessor.stitchScreenshots([
+      StockScreenshotInput(url: lastURL, capturedAt: earlier.capturedAt),
+      StockScreenshotInput(url: firstURL, capturedAt: later.capturedAt)
+    ], crop: StockCrop(top: 0, bottom: 0)))
+  }
+
   func testOCRContrastSuppressesFaintWatermarkAndPreservesDarkInk() throws {
     let format = UIGraphicsImageRendererFormat()
     format.scale = 1

@@ -1,6 +1,7 @@
 import AVFoundation
 import Flutter
 import PhotosUI
+import Photos
 import UIKit
 import UniformTypeIdentifiers
 import Vision
@@ -362,12 +363,15 @@ struct StockGrayFrame {
     return count >= 100 ? sum / Double(count) : .infinity
   }
 
-  func displacement(to next: StockGrayFrame) throws -> Int {
+  func displacement(to next: StockGrayFrame, maximumShiftRatio: Double = 0.55) throws -> Int {
+    guard maximumShiftRatio > 0, maximumShiftRatio <= 0.90 else {
+      throw StockHistoryError.invalid("拼接重叠范围无效")
+    }
     guard width == next.width, height == next.height else {
       throw StockHistoryError.invalid("录屏分辨率改变，请保持竖屏重新录制")
     }
     if error(with: next, shift: 0) < 3 { return 0 }
-    let limit = Int(Double(height) * 0.55)
+    let limit = Int(Double(height) * maximumShiftRatio)
     let scores = stride(from: -limit, through: limit, by: 4).map {
       ($0, error(with: next, shift: $0, smoothed: true))
     }
@@ -402,8 +406,87 @@ struct StockScrollCoverage {
   }
 }
 
+struct StockScreenshotInput {
+  let url: URL
+  let capturedAt: Date
+
+  static func ordered(_ inputs: [StockScreenshotInput]) throws -> [StockScreenshotInput] {
+    guard (2...60).contains(inputs.count),
+      inputs.allSatisfy({ $0.capturedAt.timeIntervalSince1970.isFinite }),
+      Set(inputs.map(\.url)).count == inputs.count else {
+      throw StockHistoryError.invalid("请选择 2～60 张不同的截图")
+    }
+    let sorted = inputs.sorted { $0.capturedAt < $1.capturedAt }
+    for index in 1..<sorted.count {
+      guard sorted[index - 1].capturedAt < sorted[index].capturedAt else {
+        throw StockHistoryError.invalid("截图拍摄时间相同，无法确定先后，请排除重复截图")
+      }
+    }
+    return sorted
+  }
+}
+
 enum StockHistoryProcessor {
   static let recognitionRevision = 2
+  static func processScreenshots(_ inputs: [StockScreenshotInput], crop: StockCrop = .automatic,
+    progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
+    let image = try stitchScreenshots(inputs, crop: crop, progress: progress)
+    let lines = try recognize(image, progress: progress)
+    progress("正在保存长截图与识别结果")
+    return try StockHistoryStorage.create(image: image, lines: lines)
+  }
+
+  static func stitchScreenshots(_ inputs: [StockScreenshotInput], crop: StockCrop = .automatic,
+    progress: (String) -> Void = { _ in }) throws -> UIImage {
+    try crop.validate()
+    let sorted = try StockScreenshotInput.ordered(inputs)
+    var pieces: [CGImage] = []
+    var previous: StockGrayFrame?
+    var width = 0
+    var totalHeight = 0
+    for (index, input) in sorted.enumerated() {
+      try autoreleasepool {
+        guard let image = UIImage(contentsOfFile: input.url.path),
+          image.imageOrientation == .up, let raw = image.cgImage,
+          raw.width * raw.height <= 40_000_000 else {
+          throw StockHistoryError.invalid("第 \(index + 1) 张截图无法读取、方向不正确或尺寸过大")
+        }
+        let frame = try crop.apply(raw)
+        let gray = try StockGrayFrame(frame)
+        if let old = previous {
+          guard width == frame.width, old.height == frame.height else {
+            throw StockHistoryError.invalid("截图尺寸不一致，请选择同一手机、同一方向的原始截图")
+          }
+          let shift: Int
+          do { shift = try old.displacement(to: gray, maximumShiftRatio: 0.90) }
+          catch {
+            throw StockHistoryError.invalid("第 \(index) 与 \(index + 1) 张截图无法确认接缝，请保留两三行重叠：\(error.localizedDescription)")
+          }
+          guard shift >= 0 else {
+            throw StockHistoryError.invalid("第 \(index + 1) 张截图向上回滚，请选择从上往下截取的截图")
+          }
+          if shift > 0 {
+            guard let strip = frame.cropping(to: CGRect(x: 0,
+              y: frame.height - shift, width: frame.width, height: shift)) else {
+              throw StockHistoryError.invalid("无法提取截图新增内容")
+            }
+            pieces.append(try ownedImage(strip))
+            totalHeight += strip.height
+          }
+        } else {
+          pieces.append(try ownedImage(frame))
+          width = frame.width
+          totalHeight = frame.height
+        }
+        guard totalHeight <= 48_000, width * totalHeight <= 40_000_000 else {
+          throw StockHistoryError.invalid("截图组拼接后过长，请分组导入")
+        }
+        previous = gray
+        progress("正在拼接截图 · \(index + 1)/\(sorted.count)")
+      }
+    }
+    return renderPieces(pieces, width: width, height: totalHeight)
+  }
   static func process(url: URL, video: Bool, crop: StockCrop, documentID: String = UUID().uuidString,
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let image: UIImage
@@ -492,6 +575,11 @@ enum StockHistoryProcessor {
       }
     }
     guard !pieces.isEmpty else { throw StockHistoryError.invalid("录屏中没有可读取的画面") }
+    return renderPieces(pieces, width: width, height: totalHeight)
+  }
+
+  private static func renderPieces(_ pieces: [CGImage], width: Int, height totalHeight: Int) -> UIImage {
+    precondition(!pieces.isEmpty && width > 0 && totalHeight > 0)
     let format = UIGraphicsImageRendererFormat()
     format.scale = 1
     format.opaque = true
@@ -753,6 +841,7 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
   private let channel: FlutterMethodChannel
   private var pending: FlutterResult?
   private var video = true
+  private var screenshots = false
   private var crop = StockCrop.automatic
   private var processingView: StockImportProgressView?
 
@@ -777,10 +866,18 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
     channel.invokeMethod("historyReady", arguments: nil)
   }
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    if call.method == "import" {
-      guard pending == nil, let arguments = call.arguments as? [String: Any],
-        let video = arguments["video"] as? Bool else {
+    if call.method == "import" || call.method == "importScreenshots" {
+      guard pending == nil else {
         result(FlutterError(code: "INVALID_IMPORT", message: "导入参数无效或已有导入任务", details: nil)); return
+      }
+      let screenshots = call.method == "importScreenshots"
+      let video: Bool
+      if screenshots { video = false }
+      else {
+        guard let arguments = call.arguments as? [String: Any], let selectedVideo = arguments["video"] as? Bool else {
+          result(FlutterError(code: "INVALID_IMPORT", message: "导入参数无效", details: nil)); return
+        }
+        video = selectedVideo
       }
       let crop = StockCrop.automatic
       do { try crop.validate() } catch { Self.fail(error, result: result); return }
@@ -789,13 +886,28 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
         result(FlutterError(code: "NO_WINDOW", message: "无法打开照片选择器", details: nil)); return
       }
       while let presented = presenter.presentedViewController { presenter = presented }
-      self.video = video; self.crop = crop; pending = result
-      var configuration = PHPickerConfiguration()
-      configuration.selectionLimit = 1
-      configuration.filter = video ? .videos : .images
-      let picker = PHPickerViewController(configuration: configuration)
-      picker.delegate = self
-      presenter.present(picker, animated: true)
+      self.video = video; self.screenshots = screenshots; self.crop = crop; pending = result
+      let presentPicker = {
+        var configuration = screenshots
+          ? PHPickerConfiguration(photoLibrary: PHPhotoLibrary.shared()) : PHPickerConfiguration()
+        configuration.selectionLimit = screenshots ? 60 : 1
+        configuration.filter = video ? .videos : .images
+        configuration.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = self
+        presenter.present(picker, animated: true)
+      }
+      if screenshots {
+        // 相册创建时间不能从临时文件的创建时间推断；读取所选 PHAsset 需要相册授权。
+        PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+          DispatchQueue.main.async {
+            guard status == .authorized || status == .limited else {
+              self.finish(nil, error: StockHistoryError.invalid("请允许访问所选截图，以读取拍摄时间并正确排序")); return
+            }
+            presentPicker()
+          }
+        }
+      } else { presentPicker() }
       return
     }
     StockHistoryStorage.queue.async {
@@ -860,6 +972,10 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
   func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
     picker.dismiss(animated: true) {
       guard let selection = results.first else { self.finish(nil); return }
+      if self.screenshots {
+        self.loadScreenshots(results)
+        return
+      }
       let type = self.video ? UTType.movie.identifier : UTType.image.identifier
       selection.itemProvider.loadFileRepresentation(forTypeIdentifier: type) { url, error in
         do {
@@ -875,7 +991,47 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
       }
     }
   }
-  private func process(_ url: URL) {
+  private func loadScreenshots(_ results: [PHPickerResult]) {
+    do {
+      guard (2...60).contains(results.count) else {
+        throw StockHistoryError.invalid("请选择 2～60 张截图")
+      }
+      let selections = try results.map { selection -> (PHPickerResult, Date) in
+        guard let identifier = selection.assetIdentifier,
+          let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject,
+          asset.mediaType == .image, let date = asset.creationDate else {
+          throw StockHistoryError.invalid("无法读取截图拍摄时间，请在系统相册权限中允许访问所选截图")
+        }
+        return (selection, date)
+      }.sorted { $0.1 < $1.1 }
+      let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+      loadScreenshotFiles(selections, index: 0, inputs: [], directory: directory)
+    } catch { finish(nil, error: error) }
+  }
+
+  private func loadScreenshotFiles(_ selections: [(PHPickerResult, Date)], index: Int,
+    inputs: [StockScreenshotInput], directory: URL) {
+    precondition(Thread.isMainThread)
+    if index == selections.count {
+      process(directory, screenshots: inputs)
+      return
+    }
+    selections[index].0.itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, error in
+      do {
+        if let error = error { throw error }
+        guard let source = url else { throw StockHistoryError.invalid("无法读取第 \(index + 1) 张截图") }
+        let local = directory.appendingPathComponent("\(index)").appendingPathExtension(source.pathExtension)
+        try FileManager.default.copyItem(at: source, to: local)
+        let input = StockScreenshotInput(url: local, capturedAt: selections[index].1)
+        DispatchQueue.main.async {
+          self.loadScreenshotFiles(selections, index: index + 1, inputs: inputs + [input], directory: directory)
+        }
+      } catch { DispatchQueue.main.async { self.cleanup(directory, value: nil, error: error) } }
+    }
+  }
+
+  private func process(_ url: URL, screenshots: [StockScreenshotInput]? = nil) {
     let video = self.video, crop = self.crop
     guard let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
       let presenter = scene.windows.first(where: \.isKeyWindow)?.rootViewController else {
@@ -886,8 +1042,14 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
     presenter.present(controller, animated: true) {
       StockHistoryStorage.queue.async {
         do {
-          let document = try StockHistoryProcessor.process(url: url, video: video, crop: crop) { text in
+          let progress: (String) -> Void = { text in
             DispatchQueue.main.async { self.processingView?.update(text) }
+          }
+          let document: StockHistoryDocument
+          if let screenshots = screenshots {
+            document = try StockHistoryProcessor.processScreenshots(screenshots, crop: crop, progress: progress)
+          } else {
+            document = try StockHistoryProcessor.process(url: url, video: video, crop: crop, progress: progress)
           }
           let json = try document.json()
           DispatchQueue.main.async { self.cleanup(url, value: json) }
@@ -920,7 +1082,7 @@ final class StockImportProgressView: UIViewController {
     let spinner = UIActivityIndicatorView(style: .large)
     spinner.startAnimating()
     label.numberOfLines = 0; label.textAlignment = .center
-    update("正在读取录屏")
+    update("正在读取盘点单素材")
     let stack = UIStackView(arrangedSubviews: [spinner, label])
     stack.axis = .vertical; stack.spacing = 24; stack.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(stack)

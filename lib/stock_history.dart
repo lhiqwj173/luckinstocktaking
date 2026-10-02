@@ -206,6 +206,15 @@ class StockHistoryStore {
     );
   }
 
+  Future<StockDocument?> pickScreenshots() async {
+    final json = await channel.invokeMethod<String>('importScreenshots');
+    // 空值只代表用户取消选择；排序和拼接失败由平台明确返回异常。
+    if (json == null) return null;
+    return StockDocument.fromJson(
+      (jsonDecode(json) as Map).cast<String, dynamic>(),
+    );
+  }
+
   Future<void> save(StockDocument document) async {
     document.validate();
     await channel.invokeMethod<void>('save', jsonEncode(document.toJson()));

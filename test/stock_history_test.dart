@@ -357,6 +357,23 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('截图组入口调用批量导入，取消后不创建历史', (tester) async {
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      calls.add(call);
+      if (call.method == 'list') return '[]';
+      if (call.method == 'importScreenshots') return null;
+      throw StateError('意外的平台请求');
+    });
+    await tester.pumpWidget(const MaterialApp(home: StockHistoryPage()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('拼接截图组'));
+    await tester.pumpAndSettle();
+    expect(calls.map((call) => call.method), ['list', 'importScreenshots']);
+    expect(find.text('盘点单详情'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   test('历史加载拒绝重复标识，系统选择器取消不创建记录', () async {
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
       if (call.method == 'import') return null;

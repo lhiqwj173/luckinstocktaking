@@ -89,6 +89,11 @@ class _StockHistoryPageState extends State<StockHistoryPage>
     if (document == null || !mounted) return;
     await _open(document);
   });
+  Future<void> _importScreenshots() => _operation(() async {
+    final document = await _store.pickScreenshots();
+    if (document == null || !mounted) return;
+    await _open(document);
+  });
   Future<void> _open(StockDocument document) async {
     await Navigator.of(context).push<StockDocument>(
       MaterialPageRoute(builder: (_) => StockDocumentPage(document: document)),
@@ -273,7 +278,7 @@ class _StockHistoryPageState extends State<StockHistoryPage>
                 Text('让旧盘点单，随时可查', style: theme.textTheme.headlineSmall),
                 const SizedBox(height: 8),
                 const Text(
-                  '录屏拼接 · 本机文字识别 · 历史搜索',
+                  '录屏 / 截图拼接 · 本机文字识别 · 历史搜索',
                   style: TextStyle(height: 1.8),
                 ),
                 const SizedBox(height: 20),
@@ -286,6 +291,11 @@ class _StockHistoryPageState extends State<StockHistoryPage>
                       icon: const Icon(Icons.video_library_outlined),
                       label: const Text('拼接录屏'),
                     ),
+                    FilledButton.tonalIcon(
+                      onPressed: _busy || !_ready ? null : _importScreenshots,
+                      icon: const Icon(Icons.collections_outlined),
+                      label: const Text('拼接截图组'),
+                    ),
                     OutlinedButton.icon(
                       onPressed: _busy || !_ready ? null : () => _import(false),
                       icon: const Icon(Icons.image_outlined),
@@ -295,6 +305,10 @@ class _StockHistoryPageState extends State<StockHistoryPage>
                 ),
               ],
             ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: Text('截图组按拍摄时间从旧到新拼接，相邻截图请保留两三行重叠。'),
           ),
           ExpansionTile(
             title: const Text('录屏使用说明'),
