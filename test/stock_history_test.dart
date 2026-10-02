@@ -74,6 +74,7 @@ void main() {
         case 'table':
           automaticRecognitions++;
           final table = record();
+          table['title'] = '2026-09-30 月盘';
           table['schemaVersion'] = 2;
           table['recognitionRevision'] = 1;
           table['lines'] = [
@@ -117,6 +118,7 @@ void main() {
     expect(find.byTooltip('优化识别'), findsNothing);
     expect(automaticRecognitions, 1);
     expect(find.text('1.3盒'), findsOneWidget);
+    expect(find.text('2026-09-30 月盘'), findsOneWidget);
     await tester.enterText(
       find.widgetWithText(TextField, '单据名称（可填写日期 / 门店 / 单号）'),
       '已校对的盘点单',

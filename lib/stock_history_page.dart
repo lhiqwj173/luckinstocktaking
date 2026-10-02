@@ -454,6 +454,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
       final table = await _store.table(_document);
       if (mounted) {
         setState(() {
+          if (_title.text == _document.title) _title.text = table.title;
           _document = table;
           _lines = [...table.lines];
         });

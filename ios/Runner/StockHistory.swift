@@ -149,6 +149,9 @@ struct StockHistoryDocument: Codable {
   var needsRecognition: Bool {
     schemaVersion != 2 || (!reviewed && (recognitionRevision ?? 0) < StockHistoryProcessor.recognitionRevision)
   }
+  var needsAutomaticTitle: Bool {
+    !reviewed && title.hasPrefix("旧盘点单 ")
+  }
 
   static func date(_ text: String) -> Date? {
     let formatter = ISO8601DateFormatter()
@@ -223,9 +226,10 @@ enum StockHistoryStorage {
     }
     return json
   }
-  static func create(image: UIImage, lines: [StockTextLine], id: String = UUID().uuidString) throws -> StockHistoryDocument {
+  static func create(image: UIImage, lines: [StockTextLine], id: String = UUID().uuidString,
+    title: String = "待命名盘点单") throws -> StockHistoryDocument {
     let record = StockHistoryDocument(schemaVersion: 2, id: id,
-      title: "旧盘点单 \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short))",
+      title: title,
       createdAt: ISO8601DateFormatter().string(from: Date()), imageName: "\(id).png",
       lines: lines, reviewed: false, recognitionRevision: StockHistoryProcessor.recognitionRevision)
     try record.validate()
@@ -435,14 +439,56 @@ struct StockScreenshotInput {
   }
 }
 
+enum StockDocumentNaming {
+  static func title(from texts: [String]) throws -> String {
+    let codePattern = try NSRegularExpression(pattern: #"(?<![A-Za-z0-9])PD(20\d{2})(\d{2})(\d{2})\d{4,8}(?![A-Za-z0-9])"#,
+      options: .caseInsensitive)
+    let kindPattern = try NSRegularExpression(pattern: #"^(?:盘点类型[:：]?)?(?:门店[-－—:：]?)?(日盘|周盘|月盘|常规盘点)$"#)
+    var dates = Set<String>()
+    var kinds = Set<String>()
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+    for raw in texts {
+      let text = StockOCRRefinement.compact(raw)
+      for match in codePattern.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+        let value = text as NSString
+        let year = Int(value.substring(with: match.range(at: 1)))!
+        let month = Int(value.substring(with: match.range(at: 2)))!
+        let day = Int(value.substring(with: match.range(at: 3)))!
+        let components = DateComponents(year: year, month: month, day: day)
+        if let date = calendar.date(from: components) {
+          let actual = calendar.dateComponents([.year, .month, .day], from: date)
+          if actual.year == year, actual.month == month, actual.day == day {
+            dates.insert(String(format: "%04d-%02d-%02d", year, month, day))
+          }
+        }
+      }
+      if let match = kindPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) {
+        let kind = (text as NSString).substring(with: match.range(at: 1))
+        kinds.insert(kind == "常规盘点" ? "日盘" : kind)
+      }
+    }
+    guard dates.count <= 1, kinds.count <= 1 else {
+      throw StockHistoryError.invalid("截图包含相互冲突的盘点日期或类型，请选择同一张盘点单")
+    }
+    // 未识别的字段明确标为待确认，不使用截图时间或导入日期冒充盘点日期。
+    return "\(dates.first ?? "日期待确认") \(kinds.first ?? "类型待确认")"
+  }
+}
+
 enum StockHistoryProcessor {
   static let recognitionRevision = 2
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
+    let first = try StockScreenshotInput.ordered(inputs)[0]
+    guard let source = UIImage(contentsOfFile: first.url.path) else {
+      throw StockHistoryError.invalid("无法读取首张截图中的盘点信息")
+    }
+    let title = try documentTitle(source)
     let image = try stitchScreenshots(inputs, progress: progress)
     let lines = try recognize(image, progress: progress)
     progress("正在保存长截图与识别结果")
-    return try StockHistoryStorage.create(image: image, lines: lines)
+    return try StockHistoryStorage.create(image: image, lines: lines, title: title)
   }
 
   // 明确传入裁剪时处理没有固定表头的原始图像；默认自动定位盘点截图中的固定表头。
@@ -549,7 +595,11 @@ enum StockHistoryProcessor {
   static func process(url: URL, video: Bool, crop: StockCrop, documentID: String = UUID().uuidString,
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let image: UIImage
+    let title: String
     if video {
+      let (generator, _) = try makeGenerator(url: url)
+      let first = try generator.copyCGImage(at: .zero, actualTime: nil)
+      title = try documentTitle(UIImage(cgImage: first))
       image = try stitch(url: url, crop: crop, progress: progress)
     } else {
       guard let source = UIImage(contentsOfFile: url.path) else {
@@ -565,10 +615,32 @@ enum StockHistoryProcessor {
         source.draw(in: CGRect(origin: .zero, size: CGSize(width: source.size.width * source.scale,
           height: source.size.height * source.scale)))
       }
+      title = try documentTitle(image)
     }
     let lines = try recognize(image, progress: progress)
     progress("正在保存长截图与识别结果")
-    return try StockHistoryStorage.create(image: image, lines: lines, id: documentID)
+    return try StockHistoryStorage.create(image: image, lines: lines, id: documentID, title: title)
+  }
+
+  static func documentTitle(_ image: UIImage) throws -> String {
+    guard let source = image.cgImage else { throw StockHistoryError.invalid("无法读取盘点单基本信息") }
+    let height = min(source.height, Int((Double(source.width) * 1.1).rounded(.up)))
+    guard let tile = source.cropping(to: CGRect(x: 0, y: 0, width: source.width, height: height)) else {
+      throw StockHistoryError.invalid("无法提取盘点单基本信息")
+    }
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.recognitionLanguages = ["zh-Hans", "en-US"]
+    request.usesLanguageCorrection = false
+    try VNImageRequestHandler(cgImage: textImage(tile), options: [:]).perform([request])
+    guard let results = request.results else { throw StockHistoryError.invalid("盘点基本信息识别未返回结果") }
+    let texts = try results.map { observation -> String in
+      guard let candidate = observation.topCandidates(1).first else {
+        throw StockHistoryError.invalid("盘点基本信息识别候选为空")
+      }
+      return candidate.string
+    }
+    return try StockDocumentNaming.title(from: texts)
   }
 
   static func makeGenerator(url: URL) throws -> (AVAssetImageGenerator, Double) {
@@ -980,13 +1052,18 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate {
           let original = try JSONDecoder().decode(StockHistoryDocument.self, from: Data(contentsOf: url))
           try original.validate()
           guard original.id == id else { throw StockHistoryError.invalid("盘点单标识不一致") }
-          if !original.needsRecognition { value = try original.json() }
+          if !original.needsRecognition && !original.needsAutomaticTitle { value = try original.json() }
           else {
             guard let image = UIImage(data: try StockHistoryStorage.image(id)) else {
               throw StockHistoryError.invalid("历史长图无法读取")
             }
-            let rows = try StockHistoryProcessor.recognize(image)
-            let table = StockHistoryDocument(schemaVersion: 2, id: original.id, title: original.title,
+            let rows: [StockTextLine]
+            if original.needsRecognition { rows = try StockHistoryProcessor.recognize(image) }
+            else { rows = original.lines }
+            let title: String
+            if original.needsAutomaticTitle { title = try StockHistoryProcessor.documentTitle(image) }
+            else { title = original.title }
+            let table = StockHistoryDocument(schemaVersion: 2, id: original.id, title: title,
               createdAt: original.createdAt, imageName: original.imageName, lines: rows, reviewed: false,
               recognitionRevision: StockHistoryProcessor.recognitionRevision)
             let backup = url.deletingLastPathComponent().appendingPathComponent(

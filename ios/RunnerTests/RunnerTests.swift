@@ -6,6 +6,42 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  func testDefaultNameUsesOrderDateAndStocktakingKind() throws {
+    for (code, kind, title) in [
+      ("PD2026092510305", "门店-周盘", "2026-09-25 周盘"),
+      ("PD2026091811799", "门店-周盘", "2026-09-18 周盘"),
+      ("PD2026093011016", "门店-月盘", "2026-09-30 月盘"),
+      ("PD2026100209640", "门店-常规盘点", "2026-10-02 日盘")
+    ] {
+      XCTAssertEqual(try StockDocumentNaming.title(from: ["工单号", code, "盘点类型", kind]), title)
+    }
+    XCTAssertEqual(try StockDocumentNaming.title(from: ["PD2024022900001", "日盘"]), "2024-02-29 日盘")
+    XCTAssertEqual(try StockDocumentNaming.title(from: ["PD2026022900001", "月盘"]), "日期待确认 月盘")
+    XCTAssertEqual(try StockDocumentNaming.title(from: ["门店-周盘", "日盘杯 GS00119-04"]), "日期待确认 周盘")
+    XCTAssertThrowsError(try StockDocumentNaming.title(from: ["PD2026092510305", "PD2026093011016", "周盘"]))
+    XCTAssertThrowsError(try StockDocumentNaming.title(from: ["门店-周盘", "门店-月盘"]))
+    let id = UUID().uuidString
+    var record = StockHistoryDocument(schemaVersion: 2, id: id, title: "旧盘点单 2026/10/2, 12:00",
+      createdAt: ISO8601DateFormatter().string(from: Date()), imageName: "\(id).png",
+      lines: [StockTextLine(cells: ["货物 GS00119-04", "1袋"], confidence: 1)], reviewed: false)
+    XCTAssertTrue(record.needsAutomaticTitle)
+    record.reviewed = true
+    XCTAssertFalse(record.needsAutomaticTitle, "已手动保存的名称必须保留")
+  }
+
+  func testDefaultNameRecognizesRealWeeklyMonthlyAndDailyScreenshots() throws {
+    for (resource, expected) in [
+      ("metadata_week", "2026-09-18 周盘"),
+      ("metadata_month", "2026-09-30 月盘"),
+      ("metadata_daily", "2026-10-02 日盘")
+    ] {
+      let url = try XCTUnwrap(Bundle(for: Self.self).url(
+        forResource: resource, withExtension: "png", subdirectory: "Fixtures"))
+      let image = try XCTUnwrap(UIImage(contentsOfFile: url.path))
+      XCTAssertEqual(try StockHistoryProcessor.documentTitle(image), expected)
+    }
+  }
+
   func testShortcutOverweightRuleMatchesApp() throws {
     guard #available(iOS 16.0, *) else { throw XCTSkip("快捷指令要求 iOS 16") }
     let json = #"{"name":"奶油","aliases":[],"type":"portionBox","singleServingGrams":100,"allowMultiple":false}"#
