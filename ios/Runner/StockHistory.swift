@@ -129,7 +129,7 @@ enum StockTableParser {
     let stockHeader = headers.stock
     let top = max(nameHeader.box.maxY, stockHeader.box.maxY)
     let bottom = ordered.first(where: { cell in
-      cell.box.minY > top && ["其他信息", "历史记录"].contains { label in
+      cell.box.minY > top && ["其他信息", "其它信息", "历史记录"].contains { label in
         StockOCRRefinement.compact(cell.text).contains(label)
       }
     })?.box.minY ?? .greatestFiniteMagnitude
@@ -140,14 +140,18 @@ enum StockTableParser {
     var names: [[StockOCRCell]] = []
     var current: [StockOCRCell] = []
     for cell in body where cell.box.minX < boundary {
+      // 分列失败时数量框数字、单位或水印残留可能留在名称列；它们不属于名称，
+      // 不能参与行划分，也不能触发跨行缺字判断。
+      if isStrayPreparedCell(cell) { continue }
       if let previous = current.last,
         cell.box.minY - previous.box.maxY > max(previous.box.height, cell.box.height) * 1.25 {
         throw StockHistoryError.invalid("预制物料名称缺少制作/处理尾字，不能与下一行合并，请核对原图")
       }
       current.append(cell)
       let name = StockOCRRefinement.compact(current.map(\.text).joined())
-      if name.hasSuffix("预制作") || name.hasSuffix("预处理") {
-        names.append(current)
+      if let length = preparedNameLength(name) {
+        // 尾字后误并入的数量、单位或水印字符不计入名称。
+        names.append(truncate(current, to: length))
         current = []
       }
     }
@@ -181,6 +185,56 @@ enum StockTableParser {
           text.range(of: "[0-9]", options: .regularExpression) == nil), category: "prepared")
     }
   }
+
+  /// 分列失败时，数量框数字、单位或斜向水印残留会落在名称列；它们不可能是预制名称。
+  static func isStrayPreparedCell(_ cell: StockOCRCell) -> Bool {
+    let text = StockOCRRefinement.compact(cell.text)
+    return text.range(of: "^[A-Za-z0-9.]+$", options: .regularExpression) != nil ||
+      ["个", "毫升", "克"].contains(text)
+  }
+
+  /// 预制名称必须以「预制作」或「预处理」收尾；尾字后若只剩数量、单位或水印字符，
+  /// 说明是输入框或水印误并入，按尾字截断即可。返回名称在紧缩文本中的长度。
+  static func preparedNameLength(_ name: String) -> Int? {
+    for suffix in ["预制作", "预处理"] {
+      guard let range = name.range(of: suffix, options: .backwards) else { continue }
+      let tail = String(name[range.upperBound...])
+      if tail.isEmpty || tail.range(of: "^[0-9A-Za-z.]*(?:个|毫升|克)?$",
+        options: .regularExpression) != nil {
+        return name.distance(from: name.startIndex, to: range.upperBound)
+      }
+    }
+    return nil
+  }
+
+  /// 按紧缩文本长度裁剪累积的名称单元格，剥离尾字后误并入的字符；坐标保持原样。
+  static func truncate(_ cells: [StockOCRCell], to length: Int) -> [StockOCRCell] {
+    var remaining = length
+    var output: [StockOCRCell] = []
+    for cell in cells {
+      if remaining <= 0 { break }
+      let compact = StockOCRRefinement.compact(cell.text)
+      if compact.count <= remaining {
+        output.append(cell)
+        remaining -= compact.count
+        continue
+      }
+      var kept = ""
+      var count = 0
+      for character in cell.text {
+        if !character.isWhitespace { count += 1 }
+        if count > remaining { break }
+        kept.append(character)
+      }
+      let text = kept.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !text.isEmpty {
+        output.append(StockOCRCell(text: text, confidence: cell.confidence, box: cell.box))
+      }
+      remaining = 0
+    }
+    return output
+  }
+
   static func blankInventory(_ text: String) -> Bool {
     let value = text.replacingOccurrences(of: "\\s+|总库存[:：·;；]?|冷藏[:：·;；]?|冷冻[:：·;；]?", with: "", options: .regularExpression)
     return value.isEmpty || value.range(of: "^(?:[-－—一]+[\\p{Han}A-Za-z]{0,3})+$", options: .regularExpression) != nil
@@ -750,7 +804,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 10
+  static let recognitionRevision = 11
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let first = try StockScreenshotInput.ordered(inputs)[0]
