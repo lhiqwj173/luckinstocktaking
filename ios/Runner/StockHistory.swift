@@ -731,7 +731,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 7
+  static let recognitionRevision = 8
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let first = try StockScreenshotInput.ordered(inputs)[0]
@@ -988,7 +988,8 @@ enum StockHistoryProcessor {
     return result
   }
 
-  static func textImage(_ image: CGImage, preserveFaintText: Bool = false) throws -> CGImage {
+  static func textImage(_ image: CGImage, preserveFaintText: Bool = false,
+    isolatedNumber: Bool = false) throws -> CGImage {
     let size = image.width * image.height
     var bytes = [UInt8](repeating: 0, count: size)
     return try bytes.withUnsafeMutableBytes { buffer in
@@ -1001,8 +1002,14 @@ enum StockHistoryProcessor {
       let pixels = buffer.bindMemory(to: UInt8.self)
       for index in 0..<size {
         let value = Int(pixels[index])
-        pixels[index] = preserveFaintText ? UInt8(max(0, min(255, (value - 160) * 255 / 80))) :
-          UInt8(min(255, value * 255 / 210))
+        if isolatedNumber {
+          // 仅用于已定位的数量框：浅灰数字约 190～215，输入框背景约 243。
+          // 不能用于整张盘点单，否则同样浅色的水印也会变成黑字。
+          pixels[index] = UInt8(max(0, min(255, (value - 215) * 255 / 25)))
+        } else {
+          pixels[index] = preserveFaintText ? UInt8(max(0, min(255, (value - 160) * 255 / 80))) :
+            UInt8(min(255, value * 255 / 210))
+        }
       }
       guard let result = context.makeImage() else { throw StockHistoryError.invalid("无法生成文字识别图像") }
       return result
@@ -1212,16 +1219,35 @@ enum StockHistoryProcessor {
           let numberCrop = CGRect(x: x, y: numberTop, width: numberRight - x, height: numberBottom - numberTop)
           for scale in [2, 4] {
             let raw = try inventoryRow(cg, crop: numberCrop, scale: scale,
-              requiredPattern: "^[0-9]+(?:\\.[0-9]+)?$")
+              requiredPattern: "^[0-9]+(?:\\.[0-9]+)?$", diagnosticContext: "预制数量原图")
             let enhanced = try inventoryRow(faintText, crop: numberCrop, scale: scale,
-              requiredPattern: "^[0-9]+(?:\\.[0-9]+)?$")
+              requiredPattern: "^[0-9]+(?:\\.[0-9]+)?$", diagnosticContext: "预制数量浅灰增强")
             if raw.count == 1, enhanced.count == 1,
               StockOCRRefinement.compact(raw[0].text) == StockOCRRefinement.compact(enhanced[0].text) {
               let confidence = min(raw[0].confidence, enhanced[0].confidence)
               return [StockOCRCell(text: raw[0].text, confidence: confidence, box: raw[0].box), unit]
             }
           }
+          // accurate 按整行推断，孤立单字可能没有观察结果。fast 使用字符检测，
+          // 数量框只读英文数字，并仅接受第一候选，不能从低排名候选中挑出想要的数。
+          for scale in [2, 4] {
+            let raw = try inventoryRow(cg, crop: numberCrop, scale: scale,
+              requiredPattern: "^[0-9]+(?:\\.[0-9]+)?$", recognitionLevel: .fast,
+              diagnosticContext: "预制数量字符原图")
+            let enhanced = try inventoryRow(cg, crop: numberCrop, scale: scale,
+              requiredPattern: "^[0-9]+(?:\\.[0-9]+)?$", recognitionLevel: .fast,
+              isolatedNumber: true, diagnosticContext: "预制数量字符局部增强")
+            if raw.count == 1, enhanced.count == 1,
+              StockOCRRefinement.compact(raw[0].text) == StockOCRRefinement.compact(enhanced[0].text),
+              raw[0].box.intersects(enhanced[0].box) {
+              let confidence = min(raw[0].confidence, enhanced[0].confidence)
+              return [StockOCRCell(text: raw[0].text, confidence: confidence, box: raw[0].box), unit]
+            }
+          }
         }
+        #if DEBUG
+        print("[StockOCR] 预制数量未恢复 crop=\(crop) unitCount=\(units.count)")
+        #endif
         return nil
       }
       return goods + preparedRows
@@ -1370,7 +1396,8 @@ enum StockHistoryProcessor {
 
   static func inventoryRow(_ source: CGImage, crop: CGRect, scale: Int,
     stockColumnStart: CGFloat? = nil, horizontalOrder: Bool = false,
-    requiredPattern: String? = nil) throws -> [StockOCRCell] {
+    requiredPattern: String? = nil, recognitionLevel: VNRequestTextRecognitionLevel = .accurate,
+    isolatedNumber: Bool = false, diagnosticContext: String? = nil) throws -> [StockOCRCell] {
     guard (1...4).contains(scale), crop.width > 0, crop.height > 0,
       crop.minX >= 0, crop.minY >= 0,
       crop.maxX <= CGFloat(source.width), crop.maxY <= CGFloat(source.height),
@@ -1379,21 +1406,34 @@ enum StockHistoryProcessor {
         bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else {
       throw StockHistoryError.invalid("无法放大库存行")
     }
+    guard !isolatedNumber || (requiredPattern != nil && recognitionLevel == .fast) else {
+      throw StockHistoryError.invalid("数量框增强必须用于独立数字字符识别")
+    }
+    let input = isolatedNumber ? try textImage(tile, isolatedNumber: true) : tile
     context.interpolationQuality = .high
-    context.draw(tile, in: CGRect(x: 0, y: 0, width: tile.width * scale, height: tile.height * scale))
+    context.draw(input, in: CGRect(x: 0, y: 0, width: tile.width * scale, height: tile.height * scale))
     guard let enlarged = context.makeImage() else { throw StockHistoryError.invalid("无法生成库存行识别图") }
     let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
+    request.recognitionLevel = recognitionLevel
     request.recognitionLanguages = requiredPattern == nil ? ["zh-Hans", "en-US"] : ["en-US"]
     request.usesLanguageCorrection = false
     if requiredPattern != nil { request.minimumTextHeight = 0.01 }
     try VNImageRequestHandler(cgImage: enlarged, options: [:]).perform([request])
     guard let results = request.results else { throw StockHistoryError.invalid("库存行识别未返回结果") }
+    #if DEBUG
+    if let label = diagnosticContext {
+      let readings = results.map { observation in
+        let candidates = observation.topCandidates(5).map { "\($0.string):\($0.confidence)" }.joined(separator: "|")
+        return "box=\(observation.boundingBox) candidates=[\(candidates)]"
+      }.joined(separator: "; ")
+      print("[StockOCR] \(label) crop=\(crop) scale=\(scale) mode=\(recognitionLevel.rawValue) observations=\(results.count) \(readings)")
+    }
+    #endif
     return try results.flatMap { observation -> [StockOCRCell] in
       let dx = observation.topRight.x - observation.topLeft.x
       let dy = observation.topRight.y - observation.topLeft.y
       if abs(dy) * Double(enlarged.height) > abs(dx) * Double(enlarged.width) * 0.25 { return [] }
-      let candidates = observation.topCandidates(requiredPattern == nil ? 1 : 5)
+      let candidates = observation.topCandidates(requiredPattern == nil || recognitionLevel == .fast ? 1 : 5)
       guard !candidates.isEmpty else {
         throw StockHistoryError.invalid("库存行识别候选为空")
       }
