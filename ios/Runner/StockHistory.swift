@@ -101,20 +101,32 @@ enum StockOCRRefinement {
 }
 
 enum StockTableParser {
+  static func preparedHeaders(_ cells: [StockOCRCell]) -> (name: StockOCRCell, stock: StockOCRCell)? {
+    let names = cells.filter { StockOCRRefinement.compact($0.text).contains("预制物料名称") }
+      .sorted { $0.box.minY < $1.box.minY }
+    for name in names {
+      if let stock = cells.first(where: {
+        StockOCRRefinement.compact($0.text).contains("实盘总库存") &&
+          $0.box.minX > name.box.maxX &&
+          abs($0.box.midY - name.box.midY) <= max($0.box.height, name.box.height)
+      }) {
+        return (name, stock)
+      }
+    }
+    return nil
+  }
+
   /// 预制物料没有 GS 货号，以完整的制作/处理名称为行锚点，仍按像素位置配对库存。
   static func preparedRows(_ cells: [StockOCRCell],
     retryInventory: ((CGFloat, CGFloat, CGFloat) throws -> [StockOCRCell]?)? = nil) throws -> [StockTextLine] {
     let ordered = StockOCRRefinement.coalesce(cells).sorted {
       $0.box.midY == $1.box.midY ? $0.box.minX < $1.box.minX : $0.box.midY < $1.box.midY
     }
-    guard let nameHeader = ordered.first(where: {
-      StockOCRRefinement.compact($0.text).contains("预制物料名称")
-    }), let stockHeader = ordered.first(where: {
-      StockOCRRefinement.compact($0.text).contains("实盘总库存") &&
-        abs($0.box.midY - nameHeader.box.midY) < 50
-    }), stockHeader.box.minX > nameHeader.box.maxX else {
-      throw StockHistoryError.invalid("预制物料表头不完整，请核对原图")
+    guard let headers = preparedHeaders(ordered) else {
+      throw StockHistoryError.invalid("未能完整识别预制物料表头，请重试导入")
     }
+    let nameHeader = headers.name
+    let stockHeader = headers.stock
     let top = max(nameHeader.box.maxY, stockHeader.box.maxY)
     let bottom = ordered.first(where: { cell in
       cell.box.minY > top && ["其他信息", "历史记录"].contains { label in
@@ -738,7 +750,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 9
+  static let recognitionRevision = 10
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let first = try StockScreenshotInput.ordered(inputs)[0]
@@ -1186,9 +1198,34 @@ enum StockHistoryProcessor {
       progress("正在识别预制物料")
       let top = max(0, (marker.box.minY - 12).rounded(.down))
       // 预制数量是浅灰色输入框文字，必须读原图，不能用去水印图抹掉真实数量。
-      let prepared = try inventoryRow(cg,
+      var prepared = try inventoryRow(cg,
         crop: CGRect(x: 0, y: top, width: CGFloat(cg.width), height: CGFloat(cg.height) - top),
         scale: 2, stockColumnStart: CGFloat(columnX))
+      if StockTableParser.preparedHeaders(prepared) == nil {
+        progress("正在复核预制物料表头")
+        // 原图负责保留浅色数量；去水印图只复核表头，避免水印与标题合并。
+        // 从库存标题的左缘分开读取，不能从货物数字列的起点截掉「实盘」二字。
+        let split = max(1, min(CGFloat(cg.width - 1),
+          (header.box.minX - header.box.height * 0.5).rounded(.down)))
+        let bottom = min(CGFloat(cg.height),
+          (marker.box.maxY + max(marker.box.height, header.box.height) * 10).rounded(.up))
+        let leftCrop = CGRect(x: 0, y: top, width: split, height: bottom - top)
+        let rightCrop = CGRect(x: split, y: top, width: CGFloat(cg.width) - split, height: bottom - top)
+        for scale in [2, 4] {
+          let left = try inventoryRow(recognitionImage, crop: leftCrop, scale: scale,
+            diagnosticContext: "预制名称表头")
+          let right = try inventoryRow(recognitionImage, crop: rightCrop, scale: scale,
+            diagnosticContext: "预制库存表头")
+          if let recovered = StockTableParser.preparedHeaders(left + right) {
+            prepared.removeAll {
+              let text = StockOCRRefinement.compact($0.text)
+              return text.contains("预制物料名称") || text.contains("实盘总库存")
+            }
+            prepared.append(contentsOf: [recovered.name, recovered.stock])
+            break
+          }
+        }
+      }
       let faintText = try textImage(cg, preserveFaintText: true)
       let preparedRows = try StockTableParser.preparedRows(prepared) { start, end, quantityLeft in
         progress("正在复核预制物料数量")
@@ -1563,7 +1600,12 @@ enum StockHistoryProcessor {
           $0..<original.index(after: $0)
         }
       }
-      if let column = stockColumnStart {
+      if let nameRange = original.range(of: "预\\s*制\\s*物\\s*料\\s*名\\s*称", options: .regularExpression),
+        let stockRange = original.range(of: "实\\s*盘\\s*总\\s*库\\s*存", options: .regularExpression) {
+        // 两个表头可能被 Vision 合成一条观察结果，按真实文字范围分别取得坐标。
+        // 库存表头的左缘在货物数量列左侧，不能用数量列阈值判断是否拆分。
+        ranges = [nameRange, stockRange]
+      } else if let column = stockColumnStart {
         var characters: [(Range<String.Index>, CGRect)] = []
         for index in original.indices where !original[index].isWhitespace {
           let range = index..<original.index(after: index)
