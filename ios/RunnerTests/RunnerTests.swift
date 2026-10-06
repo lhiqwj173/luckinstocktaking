@@ -6,6 +6,14 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  func testProductCodeCanonicalizationDoesNotInventDigits() {
+    XCTAssertEqual(StockOCRRefinement.canonicalProductCode("gs09637－02"), "GS09637-02")
+    XCTAssertEqual(StockOCRRefinement.canonicalProductCode(" GS09889-03 "), "GS09889-03")
+    XCTAssertNil(StockOCRRefinement.canonicalProductCode("GS09637-O2"))
+    XCTAssertNil(StockOCRRefinement.canonicalProductCode("GS09889-O3"))
+    XCTAssertNil(StockOCRRefinement.canonicalProductCode("活动周边 O202609YL1"))
+  }
+
   func testRealDailyInventoryIncludesAllGoodsAndFivePreparedMaterials() throws {
     let url = try XCTUnwrap(Bundle(for: Self.self).url(
       forResource: "inventory_daily_20261005", withExtension: "jpg", subdirectory: "Fixtures"))
@@ -25,7 +33,7 @@ class RunnerTests: XCTestCase {
       }
     })
     XCTAssertEqual(actualCodes, expectedCodes,
-      "缺失货号：\(expectedCodes.subtracting(actualCodes).sorted())；额外货号：\(actualCodes.subtracting(expectedCodes).sorted())")
+      "缺失货号：\(expectedCodes.subtracting(actualCodes).sorted())；额外货号：\(actualCodes.subtracting(expectedCodes).sorted())；含糊货号原文：\(goods.filter { row in expression.firstMatch(in: row.cells[0], range: NSRange(row.cells[0].startIndex..., in: row.cells[0])) == nil }.map { $0.cells[0] })")
     XCTAssertEqual(prepared.count, 5)
     let expected = [("青金桔", "13个"), ("冷萃咖啡液", "1200毫升"),
       ("鲜橙", "3个"), ("香水柠檬", "6个"), ("巧克力", "0克")]
