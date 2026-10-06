@@ -652,7 +652,11 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
       return;
     }
     setState(() {
-      _lines[index] = StockLine(cells: cells, confidence: 1);
+      _lines[index] = StockLine(
+        cells: cells,
+        confidence: 1,
+        category: _lines[index].category,
+      );
       _error = null;
     });
   }
@@ -853,6 +857,11 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
+                                if (entry.value.isPrepared)
+                                  Text(
+                                    '预制物料',
+                                    style: theme.textTheme.labelSmall,
+                                  ),
                                 SelectableText(entry.value.cells[0]),
                                 if (entry.value.reviewIssue != null &&
                                     entry.value.reviewIssue != '库存数字待确认')

@@ -84,6 +84,33 @@ class StockInventory {
   bool get hasValue => !uncertain && parts.values.any((part) => part.hasValue);
   bool get needsReview =>
       uncertain || parts.values.any((part) => part.uncertain);
+  bool get totalMissing => parts.containsKey('库存') && !parts['库存']!.hasValue;
+  String get reviewStatus {
+    if (uncertain || parts.values.any((part) => part.uncertain)) {
+      return totalMissing ? '总库存缺失或无法识别，需核对原图' : '库存数字待确认';
+    }
+    if (totalMissing) return '原图总库存未填写';
+    if (parts.isEmpty || !hasValue) return '原图库存未填写';
+    final total = parts['库存'];
+    final chilled = parts['冷藏'];
+    final frozen = parts['冷冻'];
+    if (total != null &&
+        chilled != null &&
+        frozen != null &&
+        total.amounts.keys.toSet().containsAll(chilled.amounts.keys) &&
+        total.amounts.keys.toSet().containsAll(frozen.amounts.keys) &&
+        chilled.amounts.keys.toSet().containsAll(total.amounts.keys) &&
+        frozen.amounts.keys.toSet().containsAll(total.amounts.keys)) {
+      for (final unit in total.amounts.keys) {
+        if (!total.amounts[unit]!
+            .subtract(chilled.amounts[unit]!.add(frozen.amounts[unit]!))
+            .isZero) {
+          return '总库存与冷藏、冷冻合计不一致';
+        }
+      }
+    }
+    return '已解析';
+  }
 
   factory StockInventory.parse(String raw, {bool uncertain = false}) {
     final labels = RegExp(r'(总库存|冷藏|冷冻)\s*[:：·;；]?');

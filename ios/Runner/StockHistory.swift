@@ -17,6 +17,7 @@ struct StockTextLine: Codable {
   var cells: [String]
   var confidence: Double
   var inventoryUncertain: Bool? = nil
+  var category: String? = nil
 }
 
 struct StockOCRCell {
@@ -94,6 +95,53 @@ enum StockOCRRefinement {
 }
 
 enum StockTableParser {
+  /// 预制物料没有 GS 货号，以完整的制作/处理名称为行锚点，仍按像素位置配对库存。
+  static func preparedRows(_ cells: [StockOCRCell]) throws -> [StockTextLine] {
+    let ordered = StockOCRRefinement.coalesce(cells).sorted {
+      $0.box.midY == $1.box.midY ? $0.box.minX < $1.box.minX : $0.box.midY < $1.box.midY
+    }
+    guard let nameHeader = ordered.first(where: {
+      StockOCRRefinement.compact($0.text).contains("预制物料名称")
+    }), let stockHeader = ordered.first(where: {
+      StockOCRRefinement.compact($0.text).contains("实盘总库存") &&
+        abs($0.box.midY - nameHeader.box.midY) < 50
+    }), stockHeader.box.minX > nameHeader.box.maxX else {
+      throw StockHistoryError.invalid("预制物料表头不完整，请核对原图")
+    }
+    let top = max(nameHeader.box.maxY, stockHeader.box.maxY)
+    let bottom = ordered.first(where: { cell in
+      cell.box.minY > top && ["其他信息", "历史记录"].contains { label in
+        StockOCRRefinement.compact(cell.text).contains(label)
+      }
+    })?.box.minY ?? .greatestFiniteMagnitude
+    let boundary = (nameHeader.box.maxX + stockHeader.box.minX) / 2
+    let body = ordered.filter { $0.box.midY > top && $0.box.midY < bottom }
+    var names: [[StockOCRCell]] = []
+    var current: [StockOCRCell] = []
+    for cell in body where cell.box.minX < boundary {
+      current.append(cell)
+      let name = StockOCRRefinement.compact(current.map(\.text).joined())
+      if name.hasSuffix("预制作") || name.hasSuffix("预处理") {
+        names.append(current)
+        current = []
+      }
+    }
+    guard !names.isEmpty, current.isEmpty else {
+      throw StockHistoryError.invalid("预制物料名称不完整，无法可靠划分行，请核对原图")
+    }
+    return names.enumerated().map { index, parts in
+      let start = index == 0 ? top :
+        (names[index - 1].map { $0.box.maxY }.max()! + parts.map { $0.box.minY }.min()!) / 2
+      let end = index + 1 == names.count ? bottom :
+        (parts.map { $0.box.maxY }.max()! + names[index + 1].map { $0.box.minY }.min()!) / 2
+      let stocks = body.filter { $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end }
+      let text = stocks.map(\.text).joined(separator: "\n")
+      return StockTextLine(cells: [parts.map(\.text).joined(separator: "\n"), text],
+        confidence: (parts + stocks).map(\.confidence).min()!,
+        inventoryUncertain: stocks.isEmpty || (!blankInventory(text) &&
+          text.range(of: "[0-9]", options: .regularExpression) == nil), category: "prepared")
+    }
+  }
   static func blankInventory(_ text: String) -> Bool {
     let value = text.replacingOccurrences(of: "\\s+|总库存[:：·;；]?|冷藏[:：·;；]?|冷冻[:：·;；]?", with: "", options: .regularExpression)
     return value.isEmpty || value.range(of: "^(?:[-－—一]+[\\p{Han}A-Za-z]{0,3})+$", options: .regularExpression) != nil
@@ -113,6 +161,7 @@ enum StockTableParser {
     return [text.startIndex..<text.endIndex]
   }
   static func rows(_ cells: [StockOCRCell],
+    retryName: ((CGFloat, CGFloat, CGFloat) throws -> [StockOCRCell]?)? = nil,
     retryInventory: ((CGFloat, CGFloat) throws -> [StockOCRCell])? = nil) throws -> [StockTextLine] {
     let ordered = StockOCRRefinement.coalesce(cells).sorted {
       $0.box.midY == $1.box.midY ? $0.box.minX < $1.box.minX : $0.box.midY < $1.box.midY
@@ -153,6 +202,28 @@ enum StockTableParser {
         (names[index - 1].map { $0.box.maxY }.max()! + parts.map { $0.box.minY }.min()!) / 2
       let end = index + 1 < names.count ?
         (parts.map { $0.box.maxY }.max()! + names[index + 1].map { $0.box.minY }.min()!) / 2 : footer
+      var nameParts = parts
+      let name = parts.map(\.text).joined(separator: "\n")
+      let missingSpecification = name.range(of: "饮料|饮品|咖啡豆|调味酱|蛋糕|面包", options: .regularExpression) != nil &&
+        name.range(of: "[0-9](?:\\.[0-9]+)?\\s*(?:kg|KG|g|ml|mL|L|升|克)", options: .regularExpression) == nil
+      if missingSpecification || parts.contains(where: { $0.confidence < 0.8 ||
+        $0.text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("/") ||
+        StockOCRRefinement.compact($0.text).range(of: "^[\\p{Han}]$", options: .regularExpression) != nil
+      }), let retry = retryName, let recovered = try retry(start, end, parts.map { $0.box.minX }.min()!) {
+        let expression = try NSRegularExpression(pattern: code)
+        func codes(_ text: String) -> [String] {
+          expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).map {
+            (text as NSString).substring(with: $0.range)
+          }
+        }
+        let oldCodes = codes(name)
+        let newName = recovered.map(\.text).joined(separator: "\n")
+        let newCodes = codes(newName)
+        let complete = parts.filter {
+          $0.confidence >= 0.8 && StockOCRRefinement.compact($0.text).count > 1
+        }.allSatisfy { StockOCRRefinement.compact(newName).contains(StockOCRRefinement.compact($0.text)) }
+        if complete && oldCodes == newCodes && oldCodes.count == 1 { nameParts = recovered }
+      }
       var stocks = body.filter { $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end }
       var inventory = stocks.map(\.text).joined(separator: "\n")
       if inventory.range(of: "[0-9]", options: .regularExpression) == nil,
@@ -162,8 +233,8 @@ enum StockTableParser {
         }.sorted { $0.box.midY < $1.box.midY }
         inventory = stocks.map(\.text).joined(separator: "\n")
       }
-      return StockTextLine(cells: [parts.map(\.text).joined(separator: "\n"), inventory],
-        confidence: (parts + stocks).map(\.confidence).min()!,
+      return StockTextLine(cells: [nameParts.map(\.text).joined(separator: "\n"), inventory],
+        confidence: (nameParts + stocks).map(\.confidence).min()!,
         inventoryUncertain: stocks.isEmpty || (!blankInventory(inventory) && inventory.range(of: "[0-9]", options: .regularExpression) == nil))
     }
   }
@@ -201,7 +272,8 @@ struct StockHistoryDocument: Codable {
           (schemaVersion != 2 || lines.allSatisfy { $0.cells.count == 2 }),
           lines.allSatisfy({ !$0.cells.isEmpty && $0.cells.enumerated().allSatisfy { index, text in
             (schemaVersion == 2 && index == 1) || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-          } && $0.confidence.isFinite && (0...1).contains($0.confidence) }) else {
+          } && ($0.category == nil || $0.category == "goods" || $0.category == "prepared") &&
+            $0.confidence.isFinite && (0...1).contains($0.confidence) }) else {
       throw StockHistoryError.invalid("历史盘点单格式无效，请检查本地数据")
     }
   }
@@ -631,7 +703,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 3
+  static let recognitionRevision = 4
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let first = try StockScreenshotInput.ordered(inputs)[0]
@@ -1026,7 +1098,22 @@ enum StockHistoryProcessor {
       }
     }
     cells = try refine(cells, original: cg, clean: recognitionImage, columnX: columnX, progress: progress)
-    return try StockTableParser.rows(cells) { start, end in
+    let goods = try StockTableParser.rows(cells, retryName: { start, end, left in
+      progress("正在复核名称和规格")
+      let top = max(0, start.rounded(.down))
+      let bottom = min(CGFloat(cg.height), end.rounded(.up))
+      let x = max(0, (left - 8).rounded(.down))
+      let crop = CGRect(x: x, y: top, width: CGFloat(columnX) - x, height: bottom - top)
+      let raw = try inventoryRow(cg, crop: crop, scale: 2).sorted { $0.box.midY < $1.box.midY }
+      let clean = try inventoryRow(recognitionImage, crop: crop, scale: 2).sorted { $0.box.midY < $1.box.midY }
+      // 只有原图与去水印图的完整行文本一致时才替换；不同读法保留原结果供校对。
+      guard !raw.isEmpty, !clean.isEmpty,
+        StockOCRRefinement.compact(raw.map(\.text).joined()) ==
+          StockOCRRefinement.compact(clean.map(\.text).joined()),
+        min(raw.map(\.confidence).min()!, clean.map(\.confidence).min()!) >= 0.8 else { return nil }
+      let confidence = min(raw.map(\.confidence).min()!, clean.map(\.confidence).min()!)
+      return raw.map { StockOCRCell(text: $0.text, confidence: min($0.confidence, confidence), box: $0.box) }
+    }) { start, end in
       progress("正在放大复核未识别的库存行")
       let crop = CGRect(x: CGFloat(columnX), y: max(0, start.rounded(.down)),
         width: CGFloat(cg.width - columnX),
@@ -1044,7 +1131,19 @@ enum StockHistoryProcessor {
       // 识别任务成功但数量不确定：保留实际 OCR 文本并标记待确认，允许部分盘点单保存。
       return readings.max { $0.count < $1.count }!
     }
-
+    if let marker = cells.filter({
+      StockOCRRefinement.compact($0.text).contains("预制物料信息") ||
+        StockOCRRefinement.compact($0.text).contains("预制物料名称")
+    }).min(by: { $0.box.minY < $1.box.minY }) {
+      progress("正在识别预制物料")
+      let top = max(0, (marker.box.minY - 12).rounded(.down))
+      // 预制数量是浅灰色输入框文字，必须读原图，不能用去水印图抹掉真实数量。
+      let prepared = try inventoryRow(cg,
+        crop: CGRect(x: 0, y: top, width: CGFloat(cg.width), height: CGFloat(cg.height) - top),
+        scale: 2, stockColumnStart: CGFloat(columnX))
+      return goods + (try StockTableParser.preparedRows(prepared))
+    }
+    return goods
   }
 
   static func refine(_ cells: [StockOCRCell], original: CGImage, clean: CGImage,
@@ -1090,7 +1189,8 @@ enum StockHistoryProcessor {
     return output
   }
 
-  static func inventoryRow(_ source: CGImage, crop: CGRect, scale: Int) throws -> [StockOCRCell] {
+  static func inventoryRow(_ source: CGImage, crop: CGRect, scale: Int,
+    stockColumnStart: CGFloat? = nil) throws -> [StockOCRCell] {
     guard (1...4).contains(scale), crop.width > 0, crop.height > 0,
       crop.minX >= 0, crop.minY >= 0,
       crop.maxX <= CGFloat(source.width), crop.maxY <= CGFloat(source.height),
@@ -1108,20 +1208,42 @@ enum StockHistoryProcessor {
     request.usesLanguageCorrection = false
     try VNImageRequestHandler(cgImage: enlarged, options: [:]).perform([request])
     guard let results = request.results else { throw StockHistoryError.invalid("库存行识别未返回结果") }
-    return try results.compactMap { observation in
+    return try results.flatMap { observation -> [StockOCRCell] in
       let dx = observation.topRight.x - observation.topLeft.x
       let dy = observation.topRight.y - observation.topLeft.y
-      if abs(dy) * Double(enlarged.height) > abs(dx) * Double(enlarged.width) * 0.25 { return nil }
+      if abs(dy) * Double(enlarged.height) > abs(dx) * Double(enlarged.width) * 0.25 { return [] }
       guard let candidate = observation.topCandidates(1).first else {
         throw StockHistoryError.invalid("库存行识别候选为空")
       }
       let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !text.isEmpty else { throw StockHistoryError.invalid("库存行识别文字为空") }
-      let box = observation.boundingBox
-      return StockOCRCell(text: text, confidence: Double(candidate.confidence),
-        box: CGRect(x: crop.minX + box.minX * CGFloat(tile.width),
-          y: crop.minY + (1 - box.maxY) * CGFloat(tile.height),
-          width: box.width * CGFloat(tile.width), height: box.height * CGFloat(tile.height)))
+      let original = candidate.string
+      var ranges = [original.startIndex..<original.endIndex]
+      if let column = stockColumnStart {
+        var characters: [(Range<String.Index>, CGRect)] = []
+        for index in original.indices where !original[index].isWhitespace {
+          let range = index..<original.index(after: index)
+          guard let character = try candidate.boundingBox(for: range) else {
+            throw StockHistoryError.invalid("无法定位预制物料列边界")
+          }
+          let box = character.boundingBox
+          characters.append((range, CGRect(x: crop.minX + box.minX * CGFloat(tile.width), y: 0,
+            width: box.width * CGFloat(tile.width), height: box.height * CGFloat(tile.height))))
+        }
+        ranges = StockTableParser.splitColumnGap(original, characters: characters, stockColumnStart: column)
+      }
+      return try ranges.map { range in
+        guard let region = try candidate.boundingBox(for: range) else {
+          throw StockHistoryError.invalid("无法定位行识别文字")
+        }
+        let box = region.boundingBox
+        let part = String(original[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !part.isEmpty else { throw StockHistoryError.invalid("行识别文字分列后为空") }
+        return StockOCRCell(text: part, confidence: Double(candidate.confidence),
+          box: CGRect(x: crop.minX + box.minX * CGFloat(tile.width),
+            y: crop.minY + (1 - box.maxY) * CGFloat(tile.height),
+            width: box.width * CGFloat(tile.width), height: box.height * CGFloat(tile.height)))
+      }
     }
   }
 }

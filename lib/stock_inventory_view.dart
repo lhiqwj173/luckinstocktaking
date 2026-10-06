@@ -19,6 +19,13 @@ class StockInventoryView extends StatelessWidget {
             total.display,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
+        if (inventory.totalMissing && inventory.hasValue)
+          Text(
+            inventory.parts['库存']!.uncertain || inventory.uncertain
+                ? '总库存待确认'
+                : '总库存未填写',
+            style: TextStyle(color: theme.colorScheme.error, fontSize: 12),
+          ),
         Wrap(
           spacing: 10,
           runSpacing: 2,
@@ -45,6 +52,11 @@ class StockInventoryView extends StatelessWidget {
         if (inventory.needsReview)
           Text(
             '库存待确认',
+            style: TextStyle(color: theme.colorScheme.error, fontSize: 12),
+          ),
+        if (inventory.reviewStatus == '总库存与冷藏、冷冻合计不一致')
+          Text(
+            inventory.reviewStatus,
             style: TextStyle(color: theme.colorScheme.error, fontSize: 12),
           ),
         for (final part in inventory.parts.values)

@@ -6,6 +6,70 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  func testRealDailyInventoryIncludesAllGoodsAndFivePreparedMaterials() throws {
+    let url = try XCTUnwrap(Bundle(for: Self.self).url(
+      forResource: "inventory_daily_20261005", withExtension: "jpg", subdirectory: "Fixtures"))
+    let image = try XCTUnwrap(UIImage(contentsOfFile: url.path))
+    let rows = try StockHistoryProcessor.recognize(image)
+    let goods = rows.filter { $0.category != "prepared" }
+    let prepared = rows.filter { $0.category == "prepared" }
+    XCTAssertEqual(goods.count, 116)
+    XCTAssertEqual(prepared.count, 5)
+    let expected = [("青金桔", "13个"), ("冷萃咖啡液", "1200毫升"),
+      ("鲜橙", "3个"), ("香水柠檬", "6个"), ("巧克力", "0克")]
+    for (name, quantity) in expected {
+      let row = try XCTUnwrap(prepared.first { $0.cells[0].contains(name) })
+      XCTAssertEqual(StockOCRRefinement.compact(row.cells[1]), quantity)
+      XCTAssertFalse(row.inventoryUncertain ?? true)
+    }
+    let concentrate = try XCTUnwrap(goods.first { $0.cells[0].contains("GS10623-01") })
+    XCTAssertTrue(StockOCRRefinement.compact(concentrate.cells[0]).contains("1L*12瓶/箱"))
+    XCTAssertEqual(StockOCRRefinement.compact(concentrate.cells[1]), "5.3瓶")
+  }
+
+  func testPreparedMaterialsPairWrappedNamesAndKeepMissingAndZeroQuantities() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
+    }
+    let cells = [
+      cell("预制物料名称", 20, 0), cell("实盘总库存", 440, 0),
+      cell("青金桔-预制作", 20, 50), cell("13", 500, 50), cell("个", 600, 50),
+      cell("【冷萃咖啡液】-预制作", 20, 100), cell("1200毫升", 500, 100),
+      cell("【香水柠檬-清洗（全国）】预", 20, 150), cell("处理", 20, 175), cell("6个", 500, 160),
+      cell("【鲜橙-清洗（全国）】预处理", 20, 210),
+      cell("【巧克力预调液-新】-预制作", 20, 260), cell("0克", 500, 260),
+      cell("其他信息", 20, 300), cell("修改", 20, 350), cell("2026-10-05", 500, 350),
+    ]
+    let rows = try StockTableParser.preparedRows(cells)
+    XCTAssertEqual(rows.count, 5)
+    XCTAssertTrue(rows.allSatisfy { $0.category == "prepared" })
+    XCTAssertEqual(rows[0].cells[1], "13\n个")
+    XCTAssertEqual(rows[1].cells[1], "1200毫升")
+    XCTAssertEqual(rows[2].cells[0], "【香水柠檬-清洗（全国）】预\n处理")
+    XCTAssertEqual(rows[2].cells[1], "6个")
+    XCTAssertTrue(rows[3].inventoryUncertain ?? false)
+    XCTAssertEqual(rows[4].cells[1], "0克")
+    XCTAssertFalse(rows[4].inventoryUncertain ?? true)
+    XCTAssertEqual(try StockTableParser.preparedRows(Array(cells.reversed())).map(\.cells), rows.map(\.cells))
+    XCTAssertThrowsError(try StockTableParser.preparedRows(cells.filter { $0.text != "实盘总库存" }))
+    XCTAssertThrowsError(try StockTableParser.preparedRows(cells.filter { $0.text != "处理" }))
+  }
+
+  func testNameRecoveryRestoresMissingSpecificationWithoutBorrowingAnotherProduct() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
+    }
+    let cells = [cell("货物规格名称", 20, 0), cell("实盘总库存", 440, 0),
+      cell("铂馨紫苏蜜桃风味饮料浓浆", 80, 50), cell("GS10623-01", 80, 100), cell("5.3瓶", 500, 75)]
+    let recovered = [cell("铂馨紫苏蜜桃风味饮料浓浆", 80, 50),
+      cell("1L*12瓶/箱", 80, 75), cell("GS10623-01", 80, 100)]
+    let rows = try StockTableParser.rows(cells, retryName: { _, _, _ in recovered })
+    XCTAssertTrue(rows[0].cells[0].contains("1L*12瓶/箱"))
+    XCTAssertEqual(rows[0].cells[1], "5.3瓶")
+    let other = [cell("另一款饮料1L", 80, 50), cell("GS10624-01", 80, 100)]
+    XCTAssertFalse(try StockTableParser.rows(cells, retryName: { _, _, _ in other })[0].cells[0].contains("另一款"))
+  }
+
   func testOverlappingOCRBlocksDoNotCreateAnExtraProductCodeRow() throws {
     func cell(_ text: String, _ x: Double, _ y: Double, _ width: Double, _ height: Double) -> StockOCRCell {
       StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: width, height: height))
@@ -378,8 +442,13 @@ class RunnerTests: XCTestCase {
       forResource: "recording_inventory_footer", withExtension: "png", subdirectory: "Fixtures"))
     let image = try XCTUnwrap(UIImage(data: Data(contentsOf: url)))
     let rows = try StockHistoryProcessor.recognize(image)
-    XCTAssertEqual(rows.count, 2)
-    let tissue = try XCTUnwrap(rows.last)
+    let goods = rows.filter { $0.category != "prepared" }
+    let prepared = rows.filter { $0.category == "prepared" }
+    XCTAssertEqual(goods.count, 2)
+    XCTAssertEqual(prepared.count, 4)
+    XCTAssertTrue(prepared.contains { $0.cells[0].contains("冷萃") && $0.cells[1].contains("2200") })
+    XCTAssertTrue(prepared.contains { $0.cells[0].contains("青金桔") && $0.cells[1].contains("0") })
+    let tissue = try XCTUnwrap(goods.last)
     XCTAssertTrue(tissue.cells[0].contains("GS00659-02"))
     XCTAssertTrue(tissue.cells[1].contains("13"))
     XCTAssertFalse(tissue.cells[1].contains("2200"))

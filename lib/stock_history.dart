@@ -10,16 +10,37 @@ class StockLine {
     required this.cells,
     required this.confidence,
     this.inventoryUncertain = false,
+    this.category = 'goods',
   });
   final List<String> cells;
   final double confidence;
   final bool inventoryUncertain;
+  final String category;
+  bool get isPrepared => category == 'prepared';
+  String get categoryLabel => isPrepared ? '预制物料' : '货物';
   StockInventory get inventory =>
       StockInventory.parse(cells[1], uncertain: inventoryUncertain);
   String get text => cells.join(' · ');
 
   String? get reviewIssue {
     if (cells.length != 2) return null;
+    final name = cells[0];
+    if (RegExp(r'(?:^|\n)\s*[01]20\d{4}[A-Z]+\d').hasMatch(name)) {
+      return '活动规格首字母可能被识别成数字，请对照原图';
+    }
+    if (name
+            .split('\n')
+            .any(
+              (part) => RegExp(r'^[\u4e00-\u9fff]$').hasMatch(part.trim()),
+            ) ||
+        name.split('\n').any((part) => part.trim().endsWith('/'))) {
+      return '名称或规格可能不完整，请对照原图';
+    }
+    if (!isPrepared &&
+        RegExp(r'饮料|饮品|咖啡豆|调味酱|蛋糕|面包').hasMatch(name) &&
+        !RegExp(r'\d(?:\.\d+)?\s*(?:kg|KG|g|ml|mL|L|升|克)').hasMatch(name)) {
+      return '规格可能漏识别，请对照原图';
+    }
     final codes = RegExp(r'[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}')
         .allMatches(cells[0]);
     if (codes.any(
@@ -56,13 +77,23 @@ class StockLine {
       cells: cells,
       confidence: confidence,
       inventoryUncertain: (json['inventoryUncertain'] as bool?) ?? false,
+      category: _category(json['category']),
     );
   }
   Map<String, dynamic> toJson() => {
     'cells': cells,
     'confidence': confidence,
     'inventoryUncertain': inventoryUncertain,
+    'category': category,
   };
+
+  static String _category(dynamic value) {
+    if (value == null) return 'goods';
+    if (value != 'goods' && value != 'prepared') {
+      throw const FormatException('盘点行物料类别无效');
+    }
+    return value as String;
+  }
 }
 
 class StockDocument {

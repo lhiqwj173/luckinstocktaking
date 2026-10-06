@@ -27,6 +27,53 @@ StockDocument document(String prefix, List<StockLine> lines) => StockDocument(
 );
 
 void main() {
+  test('预制物料没有货号时仍可保留在盘点单，不破坏货物比较', () {
+    StockLine prepared(String quantity) => StockLine(
+      cells: ['【冷萃咖啡液】-预制作', quantity],
+      confidence: .95,
+      category: 'prepared',
+    );
+    final before = document('1', [
+      line('GS00001-01', '3个'),
+      prepared('1200毫升'),
+    ]);
+    final after = document('2', [line('GS00001-01', '4个'), prepared('1000毫升')]);
+    final decoded = StockDocument.fromJson(
+      (jsonDecode(jsonEncode(before.toJson())) as Map).cast<String, dynamic>(),
+    );
+    expect(decoded.lines.last.isPrepared, true);
+    final comparison = StockComparison(decoded, after);
+    expect(comparison.rows.single.code, 'GS00001-01');
+    expect(comparison.rows.single.differences.single.amount.format(), '1');
+    expect(
+      () => StockLine.fromJson({
+        'cells': ['物料', '1个'],
+        'confidence': 1,
+        'category': 'unknown',
+      }),
+      throwsFormatException,
+    );
+    final legacy = StockLine.fromJson({
+      'cells': ['物料', '1个'],
+      'confidence': 1,
+    });
+    expect(legacy.category, 'goods');
+  });
+
+  test('总库存与分区合计校验使用精确小数，未填写不补零', () {
+    expect(
+      StockInventory.parse('总库存:3.8瓶\n冷藏:0.8瓶\n冷冻:3瓶').reviewStatus,
+      '已解析',
+    );
+    expect(
+      StockInventory.parse('总库存:3.7瓶\n冷藏:0.8瓶\n冷冻:3瓶').reviewStatus,
+      '总库存与冷藏、冷冻合计不一致',
+    );
+    expect(
+      StockInventory.parse('总库存:-瓶\n冷藏:0瓶\n冷冻:0瓶').reviewStatus,
+      '原图总库存未填写',
+    );
+  });
   test('占位符和空库存合法且不同于明确零值', () {
     for (final text in ['', '-袋', '-袋-根', '－盒－个', '总库存:-个\n冷藏:-盒-个\n冷冻:-盒-个']) {
       expect(StockInventory.parse(text).hasValue, false);
