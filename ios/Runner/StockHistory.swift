@@ -116,6 +116,8 @@ enum StockTableParser {
       }
     })?.box.minY ?? .greatestFiniteMagnitude
     let boundary = (nameHeader.box.maxX + stockHeader.box.minX) / 2
+    // 预制输入框的数字可在货物库存列起点左侧；用预制表头自身定位，保留左侧空白。
+    let quantityLeft = max(boundary, stockHeader.box.minX - stockHeader.box.height)
     let body = ordered.filter { $0.box.midY > top && $0.box.midY < bottom }
     var names: [[StockOCRCell]] = []
     var current: [StockOCRCell] = []
@@ -140,14 +142,14 @@ enum StockTableParser {
       let end = index + 1 == names.count ? bottom :
         (parts.map { $0.box.maxY }.max()! + names[index + 1].map { $0.box.minY }.min()!) / 2
       var stocks = body.filter { $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end }
-      if let retry = retryInventory, let recovered = try retry(start, end, boundary) {
+      if let retry = retryInventory, let recovered = try retry(start, end, quantityLeft) {
         stocks = recovered.filter {
           $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end
         }
       }
       // 数量和单位来自同一物料行的输入框，按水平方向读取，不能按基线的细微高低排序。
       stocks.sort { $0.box.minX == $1.box.minX ? $0.box.midY < $1.box.midY : $0.box.minX < $1.box.minX }
-      let text = stocks.map(\.text).joined(separator: "\n")
+      let text = stocks.map(\.text).joined()
       return StockTextLine(cells: [parts.map(\.text).joined(separator: "\n"), text],
         confidence: (parts + stocks).map(\.confidence).min()!,
         inventoryUncertain: stocks.isEmpty || (!blankInventory(text) &&
@@ -721,7 +723,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 5
+  static let recognitionRevision = 6
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let first = try StockScreenshotInput.ordered(inputs)[0]
@@ -1166,10 +1168,10 @@ enum StockHistoryProcessor {
         crop: CGRect(x: 0, y: top, width: CGFloat(cg.width), height: CGFloat(cg.height) - top),
         scale: 2, stockColumnStart: CGFloat(columnX))
       let faintText = try textImage(cg, preserveFaintText: true)
-      let preparedRows = try StockTableParser.preparedRows(prepared) { start, end, boundary in
+      let preparedRows = try StockTableParser.preparedRows(prepared) { start, end, quantityLeft in
         progress("正在复核预制物料数量")
         let y = max(0, start.rounded(.down))
-        let x = max(CGFloat(columnX), boundary.rounded(.up))
+        let x = max(0, quantityLeft.rounded(.down))
         let crop = CGRect(x: x, y: y, width: CGFloat(cg.width) - x,
           height: min(CGFloat(cg.height), end.rounded(.up)) - y)
         // 原图与保留浅色文字的增强图独立复读，整行数字和单位一致才采纳。

@@ -55,7 +55,7 @@ class RunnerTests: XCTestCase {
     let rows = try StockTableParser.preparedRows(cells)
     XCTAssertEqual(rows.count, 5)
     XCTAssertTrue(rows.allSatisfy { $0.category == "prepared" })
-    XCTAssertEqual(rows[0].cells[1], "13\n个")
+    XCTAssertEqual(rows[0].cells[1], "13个")
     XCTAssertEqual(rows[1].cells[1], "1200毫升")
     XCTAssertEqual(rows[2].cells[0], "【香水柠檬-清洗（全国）】预\n处理")
     XCTAssertEqual(rows[2].cells[1], "6个")
@@ -84,6 +84,29 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(StockOCRRefinement.compact(recovered[0].cells[1]), "13个")
     XCTAssertFalse(recovered[0].inventoryUncertain ?? true)
     XCTAssertTrue(try StockTableParser.preparedRows(missing)[0].inventoryUncertain ?? false)
+  }
+
+  func testPreparedRetryUsesItsOwnHeaderAndKeepsNumberLeftOfGoodsColumn() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
+    }
+    let cells = [cell("货物规格名称", 20, 0), cell("实盘总库存", 500, 0),
+      cell("预制物料名称", 20, 200), cell("实盘总库存", 440, 200),
+      cell("【冷萃咖啡液】-预制作", 20, 260), cell("毫升", 600, 260),
+      cell("其他信息", 20, 320)]
+    var calls = 0
+    let rows = try StockTableParser.preparedRows(cells) { start, end, left in
+      calls += 1
+      XCTAssertEqual(left, 420)
+      XCTAssertLessThan(left, 464, "不能裁掉 2200 在原图 x=464 处的首位数字")
+      XCTAssertEqual(start, 220)
+      XCTAssertEqual(end, 320)
+      return [cell("2", 464, 260), cell("2", 481, 260), cell("0", 498, 260),
+        cell("0", 515, 260), cell("毫升", 600, 258)]
+    }
+    XCTAssertEqual(calls, 1)
+    XCTAssertEqual(rows[0].cells[1], "2200毫升")
+    XCTAssertFalse(rows[0].inventoryUncertain ?? true)
   }
 
   func testNameRecoveryRestoresMissingSpecificationWithoutBorrowingAnotherProduct() throws {
@@ -497,8 +520,14 @@ class RunnerTests: XCTestCase {
     let prepared = rows.filter { $0.category == "prepared" }
     XCTAssertEqual(goods.count, 2)
     XCTAssertEqual(prepared.count, 4)
-    XCTAssertTrue(prepared.contains { $0.cells[0].contains("冷萃") && $0.cells[1].contains("2200") })
-    XCTAssertTrue(prepared.contains { $0.cells[0].contains("青金桔") && $0.cells[1].contains("0") })
+    let coldBrew = try XCTUnwrap(prepared.first { $0.cells[0].contains("冷萃") },
+      "预制名称识别结果：\(prepared.map { $0.cells[0] })")
+    let citrus = try XCTUnwrap(prepared.first { $0.cells[0].contains("青金桔") },
+      "预制名称识别结果：\(prepared.map { $0.cells[0] })")
+    XCTAssertEqual(StockOCRRefinement.compact(coldBrew.cells[1]), "2200毫升",
+      "冷萃实际识别：\(coldBrew.cells[1])，待确认：\(coldBrew.inventoryUncertain ?? false)")
+    XCTAssertEqual(StockOCRRefinement.compact(citrus.cells[1]), "0个",
+      "青金桔实际识别：\(citrus.cells[1])，待确认：\(citrus.inventoryUncertain ?? false)")
     let tissue = try XCTUnwrap(goods.last)
     XCTAssertTrue(tissue.cells[0].contains("GS00659-02"))
     XCTAssertTrue(tissue.cells[1].contains("13"))
