@@ -738,7 +738,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 8
+  static let recognitionRevision = 9
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     let first = try StockScreenshotInput.ordered(inputs)[0]
@@ -1256,6 +1256,9 @@ enum StockHistoryProcessor {
               return [StockOCRCell(text: raw[0].text, confidence: confidence, box: raw[0].box), unit]
             }
           }
+          if let number = try compactPreparedQuantity(cg, numberCrop: numberCrop, unit: unit) {
+            return [number, unit]
+          }
         }
         #if DEBUG
         print("[StockOCR] 预制数量未恢复 crop=\(crop) unitCount=\(units.count)")
@@ -1404,6 +1407,96 @@ enum StockHistoryProcessor {
       }
     }
     return output
+  }
+
+  /// 将同一行的真实数字像素和真实单位像素靠拢，给单字检测提供连续文本。
+  /// 不添加数字、不重复数字；返回坐标仍属于原图，而非重排后的识别画布。
+  static func compactPreparedQuantity(_ source: CGImage, numberCrop: CGRect,
+    unit: StockOCRCell) throws -> StockOCRCell? {
+    let unitText = StockOCRRefinement.compact(unit.text)
+    let imageBounds = CGRect(x: 0, y: 0, width: source.width, height: source.height)
+    guard ["个", "毫升", "克"].contains(unitText), unit.box.height > 0,
+      imageBounds.contains(numberCrop), numberCrop.width > 0, numberCrop.height > 0 else {
+      throw StockHistoryError.invalid("预制数量紧凑识别区域无效")
+    }
+    // 按单位基线收窄垂直范围，避免把上下分隔线当作数字笔画。
+    let band = CGRect(x: numberCrop.minX,
+      y: floor(unit.box.midY - unit.box.height * 0.85), width: numberCrop.width,
+      height: ceil(unit.box.midY + unit.box.height * 0.85) - floor(unit.box.midY - unit.box.height * 0.85))
+      .intersection(numberCrop).integral
+    guard !band.isNull, !band.isEmpty, let tile = source.cropping(to: band) else {
+      throw StockHistoryError.invalid("无法读取预制数字像素")
+    }
+    var pixels = [UInt8](repeating: 0, count: tile.width * tile.height)
+    try pixels.withUnsafeMutableBytes { buffer in
+      guard let context = CGContext(data: buffer.baseAddress, width: tile.width, height: tile.height,
+        bitsPerComponent: 8, bytesPerRow: tile.width, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else {
+        throw StockHistoryError.invalid("无法创建预制数字像素图")
+      }
+      context.draw(tile, in: CGRect(x: 0, y: 0, width: tile.width, height: tile.height))
+    }
+    var left = tile.width, right = -1, top = tile.height, bottom = -1, ink = 0
+    for y in 0..<tile.height {
+      for x in 0..<tile.width where pixels[y * tile.width + x] < 225 {
+        left = min(left, x); right = max(right, x)
+        top = min(top, y); bottom = max(bottom, y)
+        ink += 1
+      }
+    }
+    // 空白或噪点属于没有可识别数量，不能因此补零。
+    guard ink >= 6, right >= left, bottom >= top,
+      CGFloat(bottom - top + 1) >= unit.box.height * 0.25 else { return nil }
+    let numberBox = CGRect(x: band.minX + CGFloat(left) - 2, y: band.minY + CGFloat(top) - 2,
+      width: CGFloat(right - left + 5), height: CGFloat(bottom - top + 5)).intersection(numberCrop).integral
+    let unitBox = unit.box.insetBy(dx: -1, dy: -1).integral.intersection(imageBounds)
+    guard numberBox.maxX < unitBox.minX,
+      let numberImage = source.cropping(to: numberBox), let unitImage = source.cropping(to: unitBox) else {
+      throw StockHistoryError.invalid("无法裁出同一行的预制数字和单位")
+    }
+    let padding = max(4, Int(ceil(unit.box.height * 0.5)))
+    let gap = max(1, Int(ceil(unit.box.height * 0.08)))
+    let contentBottom = max(numberBox.maxY, unitBox.maxY)
+    let contentTop = min(numberBox.minY, unitBox.minY)
+    let width = padding * 2 + numberImage.width + gap + unitImage.width
+    let height = padding * 2 + Int(ceil(contentBottom - contentTop))
+    guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+      bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else {
+      throw StockHistoryError.invalid("无法创建预制数量紧凑画布")
+    }
+    context.setFillColor(gray: 1, alpha: 1)
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    context.draw(numberImage, in: CGRect(x: CGFloat(padding),
+      y: CGFloat(padding) + contentBottom - numberBox.maxY,
+      width: CGFloat(numberImage.width), height: CGFloat(numberImage.height)))
+    context.draw(unitImage, in: CGRect(x: CGFloat(padding + numberImage.width + gap),
+      y: CGFloat(padding) + contentBottom - unitBox.maxY,
+      width: CGFloat(unitImage.width), height: CGFloat(unitImage.height)))
+    guard let compact = context.makeImage() else {
+      throw StockHistoryError.invalid("无法生成预制数量紧凑图")
+    }
+    let faint = try textImage(compact, preserveFaintText: true)
+    let contrast = try textImage(compact, isolatedNumber: true)
+    let compactBounds = CGRect(x: 0, y: 0, width: width, height: height)
+    #if DEBUG
+    print("[StockOCR] 预制紧凑画布 number=\(numberBox) unit=\(unitBox) ink=\(ink) size=\(width)x\(height)")
+    #endif
+    for scale in [2, 4] {
+      var readings: [(String, Double)] = []
+      for (label, image) in [("原图", compact), ("浅灰增强", faint), ("局部增强", contrast)] {
+        let cells = try inventoryRow(image, crop: compactBounds, scale: scale,
+          diagnosticContext: "预制紧凑\(label)").sorted { $0.box.minX < $1.box.minX }
+        let value = StockOCRRefinement.compact(cells.map(\.text).joined())
+        if value.range(of: "^[0-9]+(?:\\.[0-9]+)?\(unitText)$", options: .regularExpression) != nil {
+          readings.append((value, cells.map(\.confidence).min()!))
+        }
+      }
+      // 至少两种真实像素读数一致；有有效读数冲突时继续保留待确认。
+      if readings.count >= 2, Set(readings.map { $0.0 }).count == 1 {
+        return StockOCRCell(text: String(readings[0].0.dropLast(unitText.count)),
+          confidence: readings.map { $0.1 }.min()!, box: numberBox)
+      }
+    }
+    return nil
   }
 
   static func inventoryRow(_ source: CGImage, crop: CGRect, scale: Int,
