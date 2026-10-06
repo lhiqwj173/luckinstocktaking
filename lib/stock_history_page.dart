@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'stock_export.dart';
 import 'stock_history.dart';
 import 'stock_inventory_view.dart';
 import 'stock_comparison.dart';
@@ -418,6 +419,9 @@ class _StockHistoryPageState extends State<StockHistoryPage>
 
 String _date(DateTime date) => date.toLocal().toString().substring(0, 16);
 
+/// 详情页「更多」菜单里的导出与分享动作。
+enum _ShareAction { excel, image }
+
 class StockDocumentPage extends StatefulWidget {
   const StockDocumentPage({super.key, required this.document});
   final StockDocument document;
@@ -435,6 +439,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   List<Uint8List>? _images;
   String? _error;
   bool _saving = false;
+  bool _sharing = false;
   bool _showImage = false;
 
   @override
@@ -493,47 +498,78 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
     }
   }
 
+  /// 导出与分享共用一套忙碌与错误呈现，避免和保存逻辑各写一份。
+  Future<void> _run(Future<void> Function() action) async {
+    if (_sharing) return;
+    setState(() {
+      _sharing = true;
+      _error = null;
+    });
+    try {
+      await action();
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _error = error.message ?? error.code);
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
+  void _share(_ShareAction action) => switch (action) {
+    _ShareAction.excel => _exportExcel(),
+    _ShareAction.image => _shareImage(),
+  };
+
+  /// 导出当前页面所见，包括尚未点「保存修改」的校对改动。
+  Future<void> _exportExcel() => _run(() async {
+    final table = buildStockExportTable(_title.text, _lines);
+    await _store.shareBytes(
+      name: '${sanitizeFileName(_title.text)}.xlsx',
+      bytes: Uint8List.fromList(encodeStockWorkbook(table)),
+    );
+    if (mounted) _notify('已生成 ${table.rows.length} 行 Excel，请在分享面板选择微信');
+  });
+
+  Future<void> _shareImage() => _run(() async {
+    await _store.shareImage(_document);
+    if (mounted) _notify('已打开分享面板，可发送长图到微信');
+  });
+
+  void _notify(String message) => ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text(message)));
+
+PopupMenuItem<_ShareAction> _shareItem(
+  _ShareAction action,
+  IconData icon,
+  String label, {
+  required bool enabled,
+}) {
+  return PopupMenuItem(
+    value: action,
+    enabled: enabled,
+    // ListTile 自身负责把禁用项的标题与图标画成灰色。
+    child: ListTile(
+      enabled: enabled,
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(icon),
+      title: Text(label),
+    ),
+  );
+}
+
+
   Future<void> _edit(int index) async {
-    final name = TextEditingController(text: _lines[index].cells[0]);
-    final inventory = TextEditingController(text: _lines[index].cells[1]);
-    final result = await showDialog<bool>(
+    final cells = await showDialog<List<String>>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('校对货物'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: name,
-                maxLines: 4,
-                decoration: const InputDecoration(labelText: '货物规格名称'),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: inventory,
-                maxLines: 4,
-                decoration: const InputDecoration(labelText: '实盘总库存'),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('更新'),
-          ),
-        ],
+      builder: (context) => _EditLineDialog(
+        name: _lines[index].cells[0],
+        inventory: _lines[index].cells[1],
       ),
     );
-    final cells = [name.text.trim(), inventory.text.trim()];
-    name.dispose();
-    inventory.dispose();
-    if (result != true || !mounted) return;
+    if (cells == null || !mounted) return;
     if (cells.first.isEmpty) {
       setState(() => _error = '货物名称不能为空，请重新校对');
       return;
@@ -581,6 +617,25 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                 _showImage ? Icons.table_rows_outlined : Icons.image_outlined,
               ),
               tooltip: '原图 / 表格',
+            ),
+            PopupMenuButton<_ShareAction>(
+              onSelected: _share,
+              tooltip: '导出与分享',
+              itemBuilder: (context) => [
+                _shareItem(
+                  _ShareAction.excel,
+                  Icons.table_view_outlined,
+                  '导出 Excel',
+                  // 货物表整理完成前导不出两列数据，长图未就绪时也无处可分享。
+                  enabled: _document.schemaVersion == 2 && !_preparing && !_saving,
+                ),
+                _shareItem(
+                  _ShareAction.image,
+                  Icons.ios_share_outlined,
+                  '分享长图',
+                  enabled: _images != null && !_saving,
+                ),
+              ],
             ),
           ],
         ),
@@ -762,4 +817,67 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
       ),
     );
   }
+}
+
+/// 控制器必须随对话框一起释放：showDialog 返回时关闭动画尚未结束，
+/// 在调用方释放会让仍在重建的 TextField 拿到已释放的控制器。
+class _EditLineDialog extends StatefulWidget {
+  const _EditLineDialog({required this.name, required this.inventory});
+
+  final String name;
+  final String inventory;
+
+  @override
+  State<_EditLineDialog> createState() => _EditLineDialogState();
+}
+
+class _EditLineDialogState extends State<_EditLineDialog> {
+  late final TextEditingController _name = TextEditingController(
+    text: widget.name,
+  );
+  late final TextEditingController _inventory = TextEditingController(
+    text: widget.inventory,
+  );
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _inventory.dispose();
+    super.dispose();
+  }
+
+  void _update() => Navigator.pop(context, [
+    _name.text.trim(),
+    _inventory.text.trim(),
+  ]);
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('校对货物'),
+    content: SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _name,
+            maxLines: 4,
+            decoration: const InputDecoration(labelText: '货物规格名称'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _inventory,
+            maxLines: 4,
+            decoration: const InputDecoration(labelText: '实盘总库存'),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(onPressed: _update, child: const Text('更新')),
+    ],
+  );
 }

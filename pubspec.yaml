@@ -35,6 +35,9 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
+  # 纯 Dart，用于把盘点单导出为 .xlsx；不引入任何原生插件。
+  excel: ^4.0.6
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

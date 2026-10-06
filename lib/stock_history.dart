@@ -242,4 +242,16 @@ class StockHistoryStore {
     if (bytes == null || bytes.isEmpty) throw StateError('无法读取盘点单原图');
     return bytes;
   }
+
+  /// 把导出内容写入临时文件并拉起系统分享面板，由用户选微信等目标应用。
+  /// 平台只负责呈现，取消分享属于正常路径，不会作为失败抛出。
+  Future<void> shareBytes({required String name, required Uint8List bytes}) async {
+    if (bytes.isEmpty) throw StateError('导出内容为空');
+    await channel.invokeMethod<void>('shareBytes', {'name': name, 'bytes': bytes});
+  }
+
+  /// 直接分享长图原件，不在临时目录另存副本，避免重复占用磁盘。
+  Future<void> shareImage(StockDocument document) async {
+    await channel.invokeMethod<void>('shareImage', document.id);
+  }
 }

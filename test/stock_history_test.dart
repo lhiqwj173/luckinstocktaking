@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:ui' as ui;
 
+import 'package:excel/excel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -27,6 +28,46 @@ Map<String, dynamic> record({String title = '人民路店 2026-09-30'}) => {
   ],
   'reviewed': false,
 };
+
+/// 已整理为两列货物表、可以直接导出的盘点单。
+Map<String, dynamic> tableRecord({String title = '人民路店 2026-09-30'}) => {
+  'schemaVersion': 2,
+  'id': '12345678-1234-1234-1234-123456789abc',
+  'title': title,
+  'createdAt': '2026-10-01T02:30:00Z',
+  'imageName': '12345678-1234-1234-1234-123456789abc.png',
+  'lines': [
+    {
+      'cells': ['生椰拿铁（大杯）', '3盒 2瓶'],
+      'confidence': .9,
+    },
+    {
+      'cells': ['冰美式', '冷藏12个'],
+      'confidence': .9,
+    },
+  ],
+  'reviewed': false,
+  'recognitionRevision': 1,
+};
+
+/// 长图预览分段必须是能解码的真实 PNG，空列表会被平台通道判为读取失败。
+Future<Uint8List> longImageTile(WidgetTester tester) async {
+  final png = await tester.runAsync(() async {
+    final recorder = ui.PictureRecorder();
+    Canvas(recorder).drawRect(
+      const Rect.fromLTWH(0, 0, 192, 1800),
+      Paint()..color = Colors.white,
+    );
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(192, 1800);
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    picture.dispose();
+    return data!.buffer.asUint8List();
+  });
+  if (png == null) fail('未能生成长图预览样本');
+  return png;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -509,6 +550,124 @@ void main() {
     expect(find.text('人民路店 2026-09-30'), findsNothing);
     expect(find.text('另一张单据'), findsOneWidget);
     expect(find.text('历史记录 · 1'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('导出 Excel 取当前页面所见，含尚未保存的校对', (tester) async {
+    Uint8List? shared;
+    String? sharedName;
+    final png = await longImageTile(tester);
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'imageTiles') return [png, png];
+      if (call.method == 'table') return jsonEncode(tableRecord());
+      if (call.method == 'shareBytes') {
+        final arguments = (call.arguments as Map).cast<String, Object?>();
+        sharedName = arguments['name'] as String;
+        shared = arguments['bytes'] as Uint8List;
+        return null;
+      }
+      throw StateError('意外的平台请求：${call.method}');
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StockDocumentPage(document: StockDocument.fromJson(tableRecord())),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 改第二行库存但不点「保存修改」，导出结果必须反映这次校对。
+    await tester.tap(find.byIcon(Icons.edit_outlined).at(1));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find
+          .descendant(
+            of: find.byType(AlertDialog),
+            matching: find.byType(TextField),
+          )
+          .at(1),
+      '冷藏99个',
+    );
+    await tester.tap(find.text('更新'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('导出与分享'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导出 Excel'));
+    await tester.pumpAndSettle();
+
+    expect(sharedName, '人民路店 2026-09-30.xlsx');
+    expect(shared, isNotNull);
+    expect(find.textContaining('请在分享面板选择微信'), findsOneWidget);
+    final excel = Excel.decodeBytes(shared!);
+    final sheetName = excel.getDefaultSheet();
+    if (sheetName == null) fail('导出的 Excel 缺少默认工作表');
+    final sheet = excel[sheetName];
+    expect(sheet.sheetName, '人民路店 2026-09-30');
+    // 数值列同时覆盖未改动的多单位行和刚校对过的冷藏行。
+    expect(sheet.rows[0][0]!.value, TextCellValue('货物规格名称'));
+    expect(sheet.rows[0][3]!.value, TextCellValue('冷藏-个'));
+    expect(sheet.rows[1][1]!.value, IntCellValue(3));
+    expect(sheet.rows[1][2]!.value, IntCellValue(2));
+    expect(sheet.rows[2][3]!.value, IntCellValue(99));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('分享长图按标识交给平台，由系统面板负责发送', (tester) async {
+    final calls = <MethodCall>[];
+    final png = await longImageTile(tester);
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      calls.add(call);
+      if (call.method == 'imageTiles') return [png, png];
+      if (call.method == 'table') return jsonEncode(tableRecord());
+      if (call.method == 'shareImage') return null;
+      throw StateError('意外的平台请求：${call.method}');
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StockDocumentPage(document: StockDocument.fromJson(tableRecord())),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('导出与分享'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('分享长图'));
+    await tester.pumpAndSettle();
+    expect(calls.map((call) => call.method), [
+      'imageTiles',
+      'table',
+      'shareImage',
+    ]);
+    expect(calls.last.arguments, '12345678-1234-1234-1234-123456789abc');
+    expect(find.textContaining('可发送长图到微信'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('货物表整理完成前禁用导出，避免导出无效的两列表格', (tester) async {
+    final png = await longImageTile(tester);
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'imageTiles') return [png];
+      if (call.method == 'table') {
+        throw PlatformException(code: 'OCR_FAILED', message: '库存识别失败');
+      }
+      throw StateError('意外的平台请求：${call.method}');
+    });
+    await tester.pumpWidget(
+      MaterialApp(home: StockDocumentPage(document: StockDocument.fromJson(record()))),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('导出与分享'));
+    await tester.pumpAndSettle();
+    // find.byType 按 runtimeType 精确匹配，取不到带泛型的 PopupMenuItem<_ShareAction>。
+    PopupMenuItem<Object?> menuItemOf(String label) => tester
+        .widgetList<PopupMenuItem<Object?>>(
+          find.ancestor(
+            of: find.text(label),
+            matching: find.byWidgetPredicate((widget) => widget is PopupMenuItem),
+          ),
+        )
+        .single;
+    expect(menuItemOf('导出 Excel').enabled, isFalse);
+    expect(menuItemOf('分享长图').enabled, isTrue, reason: '长图已就绪，随时可分享');
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

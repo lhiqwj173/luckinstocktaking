@@ -327,6 +327,80 @@ enum StockHistoryStorage {
   }
 }
 
+/// 把盘点单导出内容与原始长图交给系统分享面板，再由用户选微信等目标应用。
+enum StockExporter {
+  /// 导出文件暂存目录；每个分享单独一个子目录，面板关闭即连目录一起删除。
+  private static let exportsDirectory = "StockExports"
+
+  static func shareBytes(name: String, data: Data, onFinish: @escaping () -> Void) throws {
+    guard !data.isEmpty else { throw StockHistoryError.invalid("导出内容为空") }
+    // 文件名来自 Dart 侧的单据名称，必须确认它没有路径分隔符或父目录引用。
+    guard name == URL(fileURLWithPath: name).lastPathComponent,
+          !name.hasPrefix("."), name.hasSuffix(".xlsx") else {
+      throw StockHistoryError.invalid("导出文件名无效：\(name)")
+    }
+    let staging = FileManager.default.temporaryDirectory
+      .appendingPathComponent(exportsDirectory, isDirectory: true)
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+    let url = staging.appendingPathComponent(name)
+    do {
+      try data.write(to: url, options: .atomic)
+    } catch {
+      // 回滚失败同样向调用方抛出；不得留下一个看似成功的残缺目录。
+      try FileManager.default.removeItem(at: staging)
+      throw error
+    }
+    try share(url: url, cleanup: staging, onFinish: onFinish)
+  }
+
+  static func shareImage(id: String, onFinish: @escaping () -> Void) throws {
+    // 长图直接分享 Documents 下的原件：它是用户的原始数据，复制一份只会白占磁盘。
+    try share(url: try StockHistoryStorage.directory(id).appendingPathComponent("\(id).png"),
+      cleanup: nil, onFinish: onFinish)
+  }
+
+  /// `onFinish` 在分享面板关闭后调用，让调用方在整个面板存活期间保持忙碌状态；
+  /// 面板还开着时再次 present 会让 UIKit 报 already presenting 警告。
+  private static func share(url: URL, cleanup: URL?, onFinish: @escaping () -> Void) throws {
+    guard FileManager.default.fileExists(atPath: url.path) else {
+      throw StockHistoryError.invalid("待分享的文件不存在")
+    }
+    guard let presenter = topViewController() else {
+      throw StockHistoryError.invalid("无法打开分享面板，请保持应用在前台")
+    }
+    let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    // iPad 上分享面板必须挂 popover 锚点，否则呈现时直接崩溃。
+    controller.popoverPresentationController?.sourceView = presenter.view
+    controller.popoverPresentationController?.sourceRect = CGRect(
+      x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 0, height: 0)
+    controller.popoverPresentationController?.permittedArrowDirections = []
+    controller.completionWithItemsHandler = { _, _, _, _ in
+      // 取消分享是正常路径，同样要清理已写入的临时文件。
+      if let cleanup = cleanup {
+        do {
+          try FileManager.default.removeItem(at: cleanup)
+        } catch {
+          // 该回调无法向调用方抛出错误；残留目录由 iOS 在磁盘紧张时回收。
+          NSLog("清理导出临时文件失败：\(error.localizedDescription)")
+        }
+      }
+      onFinish()
+    }
+    presenter.present(controller, animated: true)
+  }
+
+  private static func topViewController() -> UIViewController? {
+    guard let scene = UIApplication.shared.connectedScenes
+      .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
+      var presenter = scene.windows.first(where: \.isKeyWindow)?.rootViewController else {
+      return nil
+    }
+    while let presented = presenter.presentedViewController { presenter = presented }
+    return presenter
+  }
+}
+
 struct StockCrop {
   static let automatic = StockCrop(top: 0.18, bottom: 0.10)
   // 截图的重叠通常只有一行；只排除导航栏和底部安全区域，不能沿用录屏的大幅裁剪。
@@ -1008,6 +1082,7 @@ enum StockHistoryProcessor {
 final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdaptivePresentationControllerDelegate {
   private let channel: FlutterMethodChannel
   private var pending: FlutterResult?
+  private var sharing = false
   private var activePicker: PHPickerViewController?
   private var video = true
   private var screenshots = false
@@ -1035,6 +1110,25 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
     channel.invokeMethod("historyReady", arguments: nil)
   }
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    // 分享必须在主线程呈现，不能落到下面的处理队列里。
+    if call.method == "shareBytes" || call.method == "shareImage" {
+      precondition(Thread.isMainThread)
+      guard !sharing else {
+        result(FlutterError(code: "INVALID_SHARE", message: "已有分享面板正在显示", details: nil)); return
+      }
+      sharing = true
+      do {
+        // 面板关闭才解除占用，期间再次分享会被上面的守卫挡下。
+        try Self.presentShare(call) { [weak self] in self?.sharing = false }
+      } catch {
+        sharing = false
+        Self.fail(error, result: result)
+        return
+      }
+      // 面板呈现成功即视为受理；用户选谁、是否取消都不再回传。
+      result(nil)
+      return
+    }
     if call.method == "import" || call.method == "importScreenshots" {
       guard pending == nil else {
         result(FlutterError(code: "INVALID_IMPORT", message: "导入参数无效或已有导入任务", details: nil)); return
@@ -1135,6 +1229,24 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
       } catch { DispatchQueue.main.async { Self.fail(error, result: result) } }
     }
   }
+  private static func presentShare(_ call: FlutterMethodCall, onFinish: @escaping () -> Void) throws {
+    precondition(Thread.isMainThread)
+    switch call.method {
+    case "shareBytes":
+      guard let arguments = call.arguments as? [String: Any],
+            let name = arguments["name"] as? String,
+            let bytes = arguments["bytes"] as? FlutterStandardTypedData else {
+        throw StockHistoryError.invalid("导出参数无效")
+      }
+      try StockExporter.shareBytes(name: name, data: bytes.data, onFinish: onFinish)
+    case "shareImage":
+      guard let id = call.arguments as? String else { throw StockHistoryError.invalid("盘点单标识缺失") }
+      try StockExporter.shareImage(id: id, onFinish: onFinish)
+    default:
+      throw StockHistoryError.invalid("未知的分享操作")
+    }
+  }
+
   private static func fail(_ error: Error, result: FlutterResult) {
     result(FlutterError(code: "HISTORY_ERROR", message: error.localizedDescription,
       details: String(reflecting: error)))
