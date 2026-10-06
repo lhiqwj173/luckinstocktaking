@@ -14,6 +14,18 @@ class RunnerTests: XCTestCase {
     let goods = rows.filter { $0.category != "prepared" }
     let prepared = rows.filter { $0.category == "prepared" }
     XCTAssertEqual(goods.count, 116)
+    let codesURL = try XCTUnwrap(Bundle(for: Self.self).url(
+      forResource: "inventory_daily_20261005_codes", withExtension: "json", subdirectory: "Fixtures"))
+    let expectedCodes = Set(try JSONDecoder().decode([String].self, from: Data(contentsOf: codesURL)))
+    let expression = try NSRegularExpression(pattern: "GS[0-9]{5}-[0-9]{2}")
+    let actualCodes = Set(goods.flatMap { row in
+      let text = StockOCRRefinement.compact(row.cells[0])
+      return expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).map {
+        (text as NSString).substring(with: $0.range)
+      }
+    })
+    XCTAssertEqual(actualCodes, expectedCodes,
+      "缺失货号：\(expectedCodes.subtracting(actualCodes).sorted())；额外货号：\(actualCodes.subtracting(expectedCodes).sorted())")
     XCTAssertEqual(prepared.count, 5)
     let expected = [("青金桔", "13个"), ("冷萃咖啡液", "1200毫升"),
       ("鲜橙", "3个"), ("香水柠檬", "6个"), ("巧克力", "0克")]
@@ -53,6 +65,25 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(try StockTableParser.preparedRows(Array(cells.reversed())).map(\.cells), rows.map(\.cells))
     XCTAssertThrowsError(try StockTableParser.preparedRows(cells.filter { $0.text != "实盘总库存" }))
     XCTAssertThrowsError(try StockTableParser.preparedRows(cells.filter { $0.text != "处理" }))
+  }
+
+  func testPreparedQuantityUsesHorizontalOrderDespiteBaselineDifferences() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
+    }
+    let cells = [cell("预制物料名称", 20, 0), cell("实盘总库存", 440, 0),
+      cell("青金桔-预制作", 20, 50), cell("个", 600, 47), cell("13", 500, 53),
+      cell("【冷萃咖啡液】-预制作", 20, 100), cell("毫升", 600, 97), cell("1200", 500, 103)]
+    let rows = try StockTableParser.preparedRows(cells)
+    XCTAssertEqual(StockOCRRefinement.compact(rows[0].cells[1]), "13个")
+    XCTAssertEqual(StockOCRRefinement.compact(rows[1].cells[1]), "1200毫升")
+    let missing = cells.filter { $0.text != "13" }
+    let recovered = try StockTableParser.preparedRows(missing) { start, end, _ in
+      start < 50 && end < 100 ? [cell("13", 500, 53), cell("个", 600, 47)] : nil
+    }
+    XCTAssertEqual(StockOCRRefinement.compact(recovered[0].cells[1]), "13个")
+    XCTAssertFalse(recovered[0].inventoryUncertain ?? true)
+    XCTAssertTrue(try StockTableParser.preparedRows(missing)[0].inventoryUncertain ?? false)
   }
 
   func testNameRecoveryRestoresMissingSpecificationWithoutBorrowingAnotherProduct() throws {
@@ -286,6 +317,26 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(values.contains(255))
     XCTAssertTrue(values.contains(where: { $0 < 100 }))
     XCTAssertFalse(values.contains(where: { (210...254).contains($0) }))
+  }
+
+  func testPreparedContrastPreservesLightGrayDigitsThatGoodsFilterErases() throws {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40), format: format).image { context in
+      UIColor(white: 245.0 / 255, alpha: 1).setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 40, height: 40))
+      UIColor(white: 215.0 / 255, alpha: 1).setFill()
+      context.fill(CGRect(x: 10, y: 10, width: 20, height: 20))
+    }.cgImage!
+    let goods = try StockHistoryProcessor.textImage(image)
+    let prepared = try StockHistoryProcessor.textImage(image, preserveFaintText: true)
+    let goodsData = try XCTUnwrap(goods.dataProvider?.data)
+    let preparedData = try XCTUnwrap(prepared.dataProvider?.data)
+    let goodsPixels = try XCTUnwrap(CFDataGetBytePtr(goodsData))
+    let preparedPixels = try XCTUnwrap(CFDataGetBytePtr(preparedData))
+    XCTAssertEqual(goodsPixels[20 * goods.bytesPerRow + 20], 255)
+    XCTAssertLessThan(preparedPixels[20 * prepared.bytesPerRow + 20], 220)
+    XCTAssertEqual(preparedPixels[0], 255)
   }
 
   func testTablePairsMultilineNamesAndQuantitiesByProductCode() throws {
