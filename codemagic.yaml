@@ -23,7 +23,7 @@ workflows:
           xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
             -destination "platform=iOS Simulator,id=$simulator_id" -parallel-testing-enabled NO \
             -resultBundlePath "$CM_BUILD_DIR/build/ios/test-results/RunnerTests.xcresult" \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$CM_BUILD_DIR/build/ios/test-results/native-regression.log"
       - name: Build iOS app and Shortcuts action
         script: flutter build ios --release --no-codesign
       - name: Package unsigned IPA
@@ -45,3 +45,4 @@ workflows:
       - build/ios/ipa/luckinstocktaking-unsigned.ipa
       - /tmp/xcodebuild_logs/*.log
       - build/ios/test-results/*.xcresult
+      - build/ios/test-results/*.log

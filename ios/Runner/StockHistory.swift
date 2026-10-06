@@ -148,10 +148,17 @@ enum StockTableParser {
       let end = index + 1 == names.count ? bottom :
         (parts.map { $0.box.maxY }.max()! + names[index + 1].map { $0.box.minY }.min()!) / 2
       var stocks = body.filter { $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end }
+      #if DEBUG
+      let rowName = StockOCRRefinement.compact(parts.map(\.text).joined())
+      print("[StockOCR] 预制行 name=\(rowName) start=\(start) end=\(end) boundary=\(boundary) quantityLeft=\(quantityLeft) initial=\(stocks.map { "\($0.text)@\($0.box)" })")
+      #endif
       if let retry = retryInventory, let recovered = try retry(start, end, quantityLeft) {
         stocks = recovered.filter {
           $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end
         }
+        #if DEBUG
+        print("[StockOCR] 预制复核配对 name=\(rowName) recovered=\(recovered.map { "\($0.text)@\($0.box)" }) retained=\(stocks.map { "\($0.text)@\($0.box)" })")
+        #endif
       }
       // 数量和单位来自同一物料行的输入框，按水平方向读取，不能按基线的细微高低排序。
       stocks.sort { $0.box.minX == $1.box.minX ? $0.box.midY < $1.box.midY : $0.box.minX < $1.box.minX }
@@ -1191,9 +1198,11 @@ enum StockHistoryProcessor {
           height: min(CGFloat(cg.height), end.rounded(.up)) - y)
         // 原图与保留浅色文字的增强图独立复读，整行数字和单位一致才采纳。
         for scale in [2, 4] {
-          let raw = try inventoryRow(cg, crop: crop, scale: scale, horizontalOrder: true)
+          let raw = try inventoryRow(cg, crop: crop, scale: scale, horizontalOrder: true,
+            diagnosticContext: "预制整行原图")
             .sorted { $0.box.minX < $1.box.minX }
-          let enhanced = try inventoryRow(faintText, crop: crop, scale: scale, horizontalOrder: true)
+          let enhanced = try inventoryRow(faintText, crop: crop, scale: scale, horizontalOrder: true,
+            diagnosticContext: "预制整行浅灰增强")
             .sorted { $0.box.minX < $1.box.minX }
           let value = StockOCRRefinement.compact(raw.map(\.text).joined())
           if !raw.isEmpty, !enhanced.isEmpty,
@@ -1208,6 +1217,9 @@ enum StockHistoryProcessor {
           cell.box.minX >= x && cell.box.midY >= start && cell.box.midY < end &&
             StockOCRRefinement.compact(cell.text).range(of: "^(?:个|毫升|克)$", options: .regularExpression) != nil
         }
+        #if DEBUG
+        print("[StockOCR] 预制单位定位 crop=\(crop) units=\(units.map { "\($0.text)@\($0.box)" })")
+        #endif
         if units.count == 1 {
           let unit = units[0]
           let numberTop = max(y, (unit.box.midY - unit.box.height * 1.5).rounded(.down))
@@ -1424,7 +1436,9 @@ enum StockHistoryProcessor {
     if let label = diagnosticContext {
       let readings = results.map { observation in
         let candidates = observation.topCandidates(5).map { "\($0.string):\($0.confidence)" }.joined(separator: "|")
-        return "box=\(observation.boundingBox) candidates=[\(candidates)]"
+        let dx = abs(observation.topRight.x - observation.topLeft.x) * Double(enlarged.width)
+        let dy = abs(observation.topRight.y - observation.topLeft.y) * Double(enlarged.height)
+        return "box=\(observation.boundingBox) rejectedSlope=\(dy > dx * 0.25) candidates=[\(candidates)]"
       }.joined(separator: "; ")
       print("[StockOCR] \(label) crop=\(crop) scale=\(scale) mode=\(recognitionLevel.rawValue) observations=\(results.count) \(readings)")
     }
