@@ -476,4 +476,49 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(StockHistoryDocument.date("not-a-date"))
   }
 
+  private func documentIDs() throws -> [String] {
+    let json = try StockHistoryStorage.list()
+    return try JSONDecoder().decode([StockHistoryDocument].self, from: Data(json.utf8)).map(\.id)
+  }
+
+  func testReorderPersistsUserOrderAndKeepsNewDocumentsFirst() throws {
+    let orderFile = try StockHistoryStorage.root()
+      .appendingPathComponent(StockHistoryStorage.orderFileName)
+    // 排序文件是全局状态，测试前后都清理，避免影响其他用例。
+    if FileManager.default.fileExists(atPath: orderFile.path) {
+      try FileManager.default.removeItem(at: orderFile)
+    }
+    addTeardownBlock {
+      if FileManager.default.fileExists(atPath: orderFile.path) {
+        try FileManager.default.removeItem(at: orderFile)
+      }
+    }
+    let image = UIImage(cgImage: pattern())
+    let lines = [StockTextLine(cells: ["奶油", "12.1盒"], confidence: 1)]
+    let first = try StockHistoryStorage.create(image: image, lines: lines)
+    let second = try StockHistoryStorage.create(image: image, lines: lines)
+    let third = try StockHistoryStorage.create(image: image, lines: lines)
+    addTeardownBlock {
+      for record in [first, second, third] {
+        let location = try StockHistoryStorage.directory(record.id)
+        if FileManager.default.fileExists(atPath: location.path) {
+          try FileManager.default.removeItem(at: location)
+        }
+      }
+    }
+    let others = try documentIDs().filter { ![first.id, second.id, third.id].contains($0) }
+    try StockHistoryStorage.reorder([third.id, second.id, first.id] + others)
+    XCTAssertEqual(Array(try documentIDs().prefix(3)), [third.id, second.id, first.id])
+    // 排序后新增的记录（不在顺序文件里）置顶，不打断用户已排好的顺序。
+    let fourth = try StockHistoryStorage.create(image: image, lines: lines)
+    addTeardownBlock { try StockHistoryStorage.delete(fourth.id) }
+    XCTAssertEqual(try documentIDs().first, fourth.id)
+    XCTAssertEqual(Array(try documentIDs().dropFirst().prefix(3)), [third.id, second.id, first.id])
+    // 非法排序必须被拒绝：缺项、重复、空、未知标识。
+    XCTAssertThrowsError(try StockHistoryStorage.reorder([first.id, second.id]))
+    XCTAssertThrowsError(try StockHistoryStorage.reorder([first.id, first.id, third.id] + others))
+    XCTAssertThrowsError(try StockHistoryStorage.reorder([]))
+    XCTAssertThrowsError(try StockHistoryStorage.reorder([UUID().uuidString]))
+  }
+
 }

@@ -162,9 +162,10 @@ void main() {
     final b = document('2', [line('GS08291-01', '2盒')]);
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
       if (call.method != 'list') throw StateError('已校对单据不应重新识别');
+      // 平台按导入时间倒序返回，最新的一份在列表顶部并作为对比的「新盘点单」。
       return jsonEncode([
-        a.toJson(),
         {...b.toJson(), 'createdAt': '2026-10-03T00:00:00Z'},
+        a.toJson(),
       ]);
     });
     addTearDown(

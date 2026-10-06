@@ -529,6 +529,7 @@ void main() {
     await tester.pumpAndSettle();
     final button = find.byTooltip('删除盘点单').first;
     await tester.ensureVisible(button);
+    await tester.pumpAndSettle();
     await tester.tap(button);
     await tester.pumpAndSettle();
     expect(find.textContaining('无法恢复'), findsOneWidget);
@@ -668,6 +669,130 @@ void main() {
         .single;
     expect(menuItemOf('导出 Excel').enabled, isFalse);
     expect(menuItemOf('分享长图').enabled, isTrue, reason: '长图已就绪，随时可分享');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  test('调整顺序要求至少两张，并只把标识按新顺序传给平台', () async {
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      calls.add(call);
+      return null;
+    });
+    final store = StockHistoryStore();
+    final first = StockDocument.fromJson(record());
+    final second = StockDocument.fromJson({
+      ...record(title: '另一张单据'),
+      'id': '22345678-1234-1234-1234-123456789abc',
+      'imageName': '22345678-1234-1234-1234-123456789abc.png',
+    });
+    await expectLater(store.reorder([first]), throwsArgumentError);
+    var notified = 0;
+    void listener() => notified++;
+    StockHistoryStore.changes.addListener(listener);
+    await store.reorder([second, first]);
+    StockHistoryStore.changes.removeListener(listener);
+    expect(calls.single.method, 'reorder');
+    expect(calls.single.arguments, [second.id, first.id]);
+    expect(notified, 1);
+  });
+
+  /// 两个可拖拽卡片：首张为「人民路店」，次张为「另一张单据」。
+  /// 加高测试视口，保证两张卡片都在 sliver 懒加载范围内可见。
+  Future<void> pumpTwoDocuments(
+    WidgetTester tester,
+    Future<Object?> Function(MethodCall call) handler,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'list') {
+        return jsonEncode([
+          record(),
+          {
+            ...record(title: '另一张单据'),
+            'id': '22345678-1234-1234-1234-123456789abc',
+            'imageName': '22345678-1234-1234-1234-123456789abc.png',
+            'lines': [
+              {
+                'cells': ['牛奶', '3'],
+                'confidence': 1,
+              },
+            ],
+          },
+        ]);
+      }
+      return handler(call);
+    });
+    await tester.pumpWidget(const MaterialApp(home: StockHistoryPage()));
+    await tester.pumpAndSettle();
+  }
+
+  /// 把第二张卡片拖到首张位置：proxy 起点与首项顶部对齐才会判定为插入首位。
+  Future<void> dragSecondCardAboveFirst(WidgetTester tester) async {
+    final second = find.byIcon(Icons.drag_handle).at(1);
+    await tester.ensureVisible(second);
+    await tester.pumpAndSettle();
+    final secondCenter = tester.getCenter(second);
+    final firstCenter = tester.getCenter(find.byIcon(Icons.drag_handle).first);
+    final gesture = await tester.startGesture(secondCenter);
+    await tester.pump();
+    await gesture.moveBy(Offset(0, firstCenter.dy - secondCenter.dy));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('拖拽手柄调整历史顺序并持久化到平台', (tester) async {
+    final calls = <MethodCall>[];
+    await pumpTwoDocuments(tester, (call) async {
+      calls.add(call);
+      if (call.method == 'reorder') return null;
+      throw StateError('意外的平台请求：${call.method}');
+    });
+    expect(find.byIcon(Icons.drag_handle), findsNWidgets(2));
+    expect(find.textContaining('长按或拖动右侧手柄'), findsOneWidget);
+
+    await dragSecondCardAboveFirst(tester);
+
+    expect(calls.single.method, 'reorder');
+    expect(calls.single.arguments, [
+      '22345678-1234-1234-1234-123456789abc',
+      '12345678-1234-1234-1234-123456789abc',
+    ]);
+    expect(
+      tester.getTopLeft(find.text('另一张单据')).dy,
+      lessThan(tester.getTopLeft(find.text('人民路店 2026-09-30')).dy),
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('搜索过滤时隐藏拖拽手柄，避免只重排可见结果', (tester) async {
+    await pumpTwoDocuments(tester, (call) async {
+      throw StateError('搜索时不应请求平台：${call.method}');
+    });
+    expect(find.byIcon(Icons.drag_handle), findsNWidgets(2));
+    await tester.enterText(find.byType(TextField).first, '椰乳');
+    await tester.pumpAndSettle();
+    expect(find.text('另一张单据'), findsNothing);
+    expect(find.byIcon(Icons.drag_handle), findsNothing);
+    expect(find.textContaining('长按或拖动右侧手柄'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('排序写入失败时回滚原顺序并显示错误', (tester) async {
+    await pumpTwoDocuments(tester, (call) async {
+      if (call.method == 'reorder') {
+        throw PlatformException(code: 'REORDER_FAILED', message: '排序失败');
+      }
+      throw StateError('意外的平台请求：${call.method}');
+    });
+    await dragSecondCardAboveFirst(tester);
+    expect(find.text('排序失败'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('人民路店 2026-09-30')).dy,
+      lessThan(tester.getTopLeft(find.text('另一张单据')).dy),
+    );
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

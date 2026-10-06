@@ -229,12 +229,90 @@ class _StockHistoryPageState extends State<StockHistoryPage>
     });
   }
 
+  /// 拖拽后先本地乐观更新，平台写盘失败时回滚为调整前的顺序。
+  /// onReorderItem 的 newIndex 已按移除旧位置调整，无需再减一。
+  Future<void> _reorder(int oldIndex, int newIndex) async {
+    if (_busy || _query.text.trim().isNotEmpty) return;
+    if (newIndex == oldIndex) return;
+    final previous = [..._documents];
+    final moved = _documents.removeAt(oldIndex);
+    _documents.insert(newIndex, moved);
+    setState(() {});
+    await _operation(() => _store.reorder(_documents));
+    if (mounted && _error != null) {
+      setState(() => _documents = previous);
+    }
+  }
+
+  Widget _documentCard(
+    StockDocument document,
+    int? index, {
+    required bool draggable,
+  }) {
+    final card = Card(
+      child: ListTile(
+        enabled: !_busy,
+        contentPadding: const EdgeInsets.all(16),
+        leading: CircleAvatar(
+          child: Icon(
+            document.reviewed
+                ? Icons.fact_check_outlined
+                : Icons.pending_actions,
+          ),
+        ),
+        title: Text(
+          document.title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          document.schemaVersion == 2
+              ? '${_date(document.createdAt)} · ${document.lines.length} 项货物 · ${document.reviewed ? '已校对' : '待校对'}'
+              : '${_date(document.createdAt)} · 待整理为两列表格',
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: '删除盘点单',
+              onPressed: _busy ? null : () => _delete(document),
+              icon: const Icon(Icons.delete_outline),
+            ),
+            if (index != null && draggable)
+              ReorderableDragStartListener(
+                index: index,
+                child: const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Icon(Icons.drag_handle),
+                ),
+              )
+            else
+              const Icon(Icons.chevron_right),
+          ],
+        ),
+        onTap: () => _operation(() => _open(document)),
+      ),
+    );
+    final key = ValueKey(document.id);
+    if (index == null || !draggable) {
+      return KeyedSubtree(key: key, child: card);
+    }
+    // 长按卡片任意位置也可拖动，手柄用于更明确地开始拖动。
+    return ReorderableDelayedDragStartListener(
+      key: key,
+      index: index,
+      child: card,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final searching = _query.text.trim().isNotEmpty;
     final matches = _documents
         .where((document) => document.matches(_query.text))
         .toList();
+    final reorderable = _ready && !searching && matches.length > 1;
     return Scaffold(
       appBar: AppBar(
         title: const Text('旧盘点单'),
@@ -253,162 +331,162 @@ class _StockHistoryPageState extends State<StockHistoryPage>
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  theme.colorScheme.primaryContainer,
-                  theme.colorScheme.surfaceContainerLow,
-                ],
-              ),
-              borderRadius: BorderRadius.circular(24),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(
-                  Icons.receipt_long,
-                  size: 36,
-                  color: theme.colorScheme.primary,
-                ),
-                const SizedBox(height: 16),
-                Text('让旧盘点单，随时可查', style: theme.textTheme.headlineSmall),
-                const SizedBox(height: 8),
-                const Text(
-                  '录屏 / 截图拼接 · 本机文字识别 · 历史搜索',
-                  style: TextStyle(height: 1.8),
-                ),
-                const SizedBox(height: 20),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: _busy || !_ready ? null : () => _import(true),
-                      icon: const Icon(Icons.video_library_outlined),
-                      label: const Text('拼接录屏'),
+      body: CustomScrollView(
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.all(20),
+            sliver: SliverList(
+              delegate: SliverChildListDelegate([
+                Container(
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        theme.colorScheme.primaryContainer,
+                        theme.colorScheme.surfaceContainerLow,
+                      ],
                     ),
-                    FilledButton.tonalIcon(
-                      onPressed: _busy || !_ready ? null : _importScreenshots,
-                      icon: const Icon(Icons.collections_outlined),
-                      label: const Text('拼接截图组'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: _busy || !_ready ? null : () => _import(false),
-                      icon: const Icon(Icons.image_outlined),
-                      label: const Text('识别长截图'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
-            child: Text('截图组按拍摄时间从旧到新拼接，相邻截图请保留两三行重叠。'),
-          ),
-          ExpansionTile(
-            title: const Text('录屏使用说明'),
-            children: [
-              const SelectableText(
-                historyInstructions,
-                style: TextStyle(height: 1.8),
-              ),
-              TextButton.icon(
-                onPressed: () async {
-                  await Clipboard.setData(
-                    const ClipboardData(text: historyInstructions),
-                  );
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(const SnackBar(content: Text('快捷指令说明已复制')));
-                  }
-                },
-                icon: const Icon(Icons.copy),
-                label: const Text('复制设置说明'),
-              ),
-            ],
-          ),
-          if (_busy) ...[
-            const LinearProgressIndicator(),
-            const SizedBox(height: 12),
-            const Text('正在处理，请保持助手打开。录屏拼接和文字识别可能需要一些时间。'),
-          ],
-          if (_error != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                _error!,
-                style: TextStyle(color: theme.colorScheme.error),
-              ),
-            ),
-          const SizedBox(height: 20),
-          Text(
-            '历史记录 · ${_documents.length}',
-            style: theme.textTheme.titleLarge,
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _query,
-            onChanged: (_) => setState(() {}),
-            decoration: InputDecoration(
-              hintText: '搜索单据、品名或数字',
-              prefixIcon: const Icon(Icons.search),
-              filled: true,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
-                borderSide: BorderSide.none,
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          if (_ready && matches.isEmpty)
-            Padding(
-              padding: const EdgeInsets.all(32),
-              child: Text(
-                _documents.isEmpty ? '还没有历史盘点单，导入第一份吧。' : '没有找到匹配的记录。',
-                textAlign: TextAlign.center,
-              ),
-            ),
-          for (final document in matches)
-            Card(
-              child: ListTile(
-                enabled: !_busy,
-                contentPadding: const EdgeInsets.all(16),
-                leading: CircleAvatar(
-                  child: Icon(
-                    document.reviewed
-                        ? Icons.fact_check_outlined
-                        : Icons.pending_actions,
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.receipt_long,
+                        size: 36,
+                        color: theme.colorScheme.primary,
+                      ),
+                      const SizedBox(height: 16),
+                      Text('让旧盘点单，随时可查', style: theme.textTheme.headlineSmall),
+                      const SizedBox(height: 8),
+                      const Text(
+                        '录屏 / 截图拼接 · 本机文字识别 · 历史搜索',
+                        style: TextStyle(height: 1.8),
+                      ),
+                      const SizedBox(height: 20),
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: _busy || !_ready
+                                ? null
+                                : () => _import(true),
+                            icon: const Icon(Icons.video_library_outlined),
+                            label: const Text('拼接录屏'),
+                          ),
+                          FilledButton.tonalIcon(
+                            onPressed: _busy || !_ready
+                                ? null
+                                : _importScreenshots,
+                            icon: const Icon(Icons.collections_outlined),
+                            label: const Text('拼接截图组'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _busy || !_ready
+                                ? null
+                                : () => _import(false),
+                            icon: const Icon(Icons.image_outlined),
+                            label: const Text('识别长截图'),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
-                title: Text(
-                  document.title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+                  child: Text('截图组按拍摄时间从旧到新拼接，相邻截图请保留两三行重叠。'),
                 ),
-                subtitle: Text(
-                  document.schemaVersion == 2
-                      ? '${_date(document.createdAt)} · ${document.lines.length} 项货物 · ${document.reviewed ? '已校对' : '待校对'}'
-                      : '${_date(document.createdAt)} · 待整理为两列表格',
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
+                ExpansionTile(
+                  title: const Text('录屏使用说明'),
                   children: [
-                    IconButton(
-                      tooltip: '删除盘点单',
-                      onPressed: _busy ? null : () => _delete(document),
-                      icon: const Icon(Icons.delete_outline),
+                    const SelectableText(
+                      historyInstructions,
+                      style: TextStyle(height: 1.8),
                     ),
-                    const Icon(Icons.chevron_right),
+                    TextButton.icon(
+                      onPressed: () async {
+                        await Clipboard.setData(
+                          const ClipboardData(text: historyInstructions),
+                        );
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('快捷指令说明已复制')),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.copy),
+                      label: const Text('复制设置说明'),
+                    ),
                   ],
                 ),
-                onTap: () => _operation(() => _open(document)),
+                if (_busy) ...[
+                  const LinearProgressIndicator(),
+                  const SizedBox(height: 12),
+                  const Text('正在处理，请保持助手打开。录屏拼接和文字识别可能需要一些时间。'),
+                ],
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    child: Text(
+                      _error!,
+                      style: TextStyle(color: theme.colorScheme.error),
+                    ),
+                  ),
+                const SizedBox(height: 20),
+                Text(
+                  '历史记录 · ${_documents.length}',
+                  style: theme.textTheme.titleLarge,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _query,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    hintText: '搜索单据、品名或数字',
+                    prefixIcon: const Icon(Icons.search),
+                    filled: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                if (_ready && matches.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Text(
+                      _documents.isEmpty ? '还没有历史盘点单，导入第一份吧。' : '没有找到匹配的记录。',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                if (reorderable)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Text('长按或拖动右侧手柄可调整盘点单顺序。'),
+                  ),
+              ]),
+            ),
+          ),
+          if (reorderable)
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              sliver: SliverReorderableList(
+                itemCount: matches.length,
+                onReorderItem: _reorder,
+                itemBuilder: (context, index) =>
+                    _documentCard(matches[index], index, draggable: !_busy),
+              ),
+            )
+          else
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              sliver: SliverList.builder(
+                itemCount: matches.length,
+                itemBuilder: (context, index) =>
+                    _documentCard(matches[index], null, draggable: false),
               ),
             ),
         ],
@@ -536,30 +614,29 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
     if (mounted) _notify('已打开分享面板，可发送长图到微信');
   });
 
-  void _notify(String message) => ScaffoldMessenger.of(
-    context,
-  ).showSnackBar(SnackBar(content: Text(message)));
+  void _notify(String message) =>
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
 
-PopupMenuItem<_ShareAction> _shareItem(
-  _ShareAction action,
-  IconData icon,
-  String label, {
-  required bool enabled,
-}) {
-  return PopupMenuItem(
-    value: action,
-    enabled: enabled,
-    // ListTile 自身负责把禁用项的标题与图标画成灰色。
-    child: ListTile(
+  PopupMenuItem<_ShareAction> _shareItem(
+    _ShareAction action,
+    IconData icon,
+    String label, {
+    required bool enabled,
+  }) {
+    return PopupMenuItem(
+      value: action,
       enabled: enabled,
-      dense: true,
-      contentPadding: EdgeInsets.zero,
-      leading: Icon(icon),
-      title: Text(label),
-    ),
-  );
-}
-
+      // ListTile 自身负责把禁用项的标题与图标画成灰色。
+      child: ListTile(
+        enabled: enabled,
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        leading: Icon(icon),
+        title: Text(label),
+      ),
+    );
+  }
 
   Future<void> _edit(int index) async {
     final cells = await showDialog<List<String>>(
@@ -627,7 +704,8 @@ PopupMenuItem<_ShareAction> _shareItem(
                   Icons.table_view_outlined,
                   '导出 Excel',
                   // 货物表整理完成前导不出两列数据，长图未就绪时也无处可分享。
-                  enabled: _document.schemaVersion == 2 && !_preparing && !_saving,
+                  enabled:
+                      _document.schemaVersion == 2 && !_preparing && !_saving,
                 ),
                 _shareItem(
                   _ShareAction.image,
@@ -846,10 +924,8 @@ class _EditLineDialogState extends State<_EditLineDialog> {
     super.dispose();
   }
 
-  void _update() => Navigator.pop(context, [
-    _name.text.trim(),
-    _inventory.text.trim(),
-  ]);
+  void _update() =>
+      Navigator.pop(context, [_name.text.trim(), _inventory.text.trim()]);
 
   @override
   Widget build(BuildContext context) => AlertDialog(

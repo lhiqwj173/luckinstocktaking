@@ -219,6 +219,7 @@ enum StockHistoryStorage {
   static let queue = DispatchQueue(label: "com.luckinstocktaking.history", qos: .userInitiated)
   static let readyNotification = Notification.Name("StockHistoryReady")
   static let pendingKey = "stockHistory.pendingDocumentID"
+  static let orderFileName = "order.json"
   static func pendingDocument() throws -> String? {
     guard let value = UserDefaults.standard.object(forKey: pendingKey) else { return nil }
     guard let id = value as? String else { throw StockHistoryError.invalid("待打开的盘点单标识损坏") }
@@ -241,10 +242,24 @@ enum StockHistoryStorage {
     guard UUID(uuidString: id) != nil else { throw StockHistoryError.invalid("盘点单标识无效") }
     return try root().appendingPathComponent(id, isDirectory: true)
   }
-  static func list() throws -> String {
+  static func order() throws -> [String] {
+    let url = try root().appendingPathComponent(orderFileName)
+    guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+    let ids = try JSONDecoder().decode([String].self, from: Data(contentsOf: url))
+    guard ids.allSatisfy({ UUID(uuidString: $0) != nil }),
+          Set(ids).count == ids.count else {
+      throw StockHistoryError.invalid("盘点单排序文件损坏")
+    }
+    return ids
+  }
+
+  private static func records() throws -> [StockHistoryDocument] {
+    // 顺序文件与盘点单目录同在根目录，这里只读取目录，跳过文件本身。
     let files = try FileManager.default.contentsOfDirectory(at: root(),
-      includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
-    let records = try files.map { directory -> StockHistoryDocument in
+      includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+    return try files.filter {
+      try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+    }.map { directory -> StockHistoryDocument in
       let record = try JSONDecoder().decode(StockHistoryDocument.self,
         from: Data(contentsOf: directory.appendingPathComponent("record.json")))
       try record.validate()
@@ -253,11 +268,43 @@ enum StockHistoryStorage {
         throw StockHistoryError.invalid("历史盘点单原图或标识损坏")
       }
       return record
-    }.sorted { $0.createdAt > $1.createdAt }
-    guard let json = String(data: try JSONEncoder().encode(records), encoding: .utf8) else {
+    }
+  }
+
+  static func list() throws -> String {
+    let records = try records()
+    // 用户调整过顺序的记录按顺序文件排；调整后新增的记录（不在顺序文件里）置顶。
+    let existing = Set(records.map(\.id))
+    var rank: [String: Int] = [:]
+    for (index, id) in try order().enumerated() where existing.contains(id) {
+      rank[id] = index
+    }
+    let sorted = records.sorted { a, b in
+      switch (rank[a.id], rank[b.id]) {
+      case let (left?, right?): return left < right
+      case (nil, _?): return true
+      case (_?, nil): return false
+      case (nil, nil): return a.createdAt > b.createdAt
+      }
+    }
+    guard let json = String(data: try JSONEncoder().encode(sorted), encoding: .utf8) else {
       throw StockHistoryError.invalid("历史列表无法编码为 UTF-8")
     }
     return json
+  }
+
+  /// 顺序文件必须覆盖当前全部盘点单，避免搜索过滤后的部分列表覆盖真实顺序。
+  static func reorder(_ ids: [String]) throws {
+    guard !ids.isEmpty,
+          ids.allSatisfy({ UUID(uuidString: $0) != nil }),
+          Set(ids).count == ids.count else {
+      throw StockHistoryError.invalid("盘点单排序参数无效")
+    }
+    guard Set(try records().map(\.id)) == Set(ids) else {
+      throw StockHistoryError.invalid("盘点单排序必须覆盖全部历史记录")
+    }
+    let url = try root().appendingPathComponent(orderFileName)
+    try JSONEncoder().encode(ids).write(to: url, options: .atomic)
   }
   static func create(image: UIImage, lines: [StockTextLine], id: String = UUID().uuidString,
     title: String = "待命名盘点单") throws -> StockHistoryDocument {
@@ -1209,6 +1256,9 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
             value = try table.json()
           }
         case "list": value = try StockHistoryStorage.list()
+        case "reorder":
+          guard let ids = call.arguments as? [String] else { throw StockHistoryError.invalid("排序参数无效") }
+          try StockHistoryStorage.reorder(ids); value = nil
         case "save":
           guard let json = call.arguments as? String else { throw StockHistoryError.invalid("盘点单必须为 JSON 文本") }
           try StockHistoryStorage.save(json); value = nil
