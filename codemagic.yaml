@@ -13,7 +13,7 @@ workflows:
       - name: Run Dart checks
         script: |
           flutter analyze
-          flutter test
+          flutter test -j 1
       - name: Run iOS native regression tests
         script: |
           set -euo pipefail

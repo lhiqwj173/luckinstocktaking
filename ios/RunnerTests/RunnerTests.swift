@@ -93,23 +93,40 @@ class RunnerTests: XCTestCase {
     func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
       StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
     }
-    // 青金桔数量框为空时水印数字与名称粘连；「处理7」为折行尾字与数量粘连；页脚标题被读成「其它信息」。
-    let cells = [
-      cell("预制物料名称", 20, 0), cell("实盘总库存", 440, 0),
-      cell("青金桔-预制作412", 20, 50), cell("个", 600, 50),
-      cell("【鲜橙-清洗（全国）】预处理", 20, 100), cell("5", 490, 100), cell("个", 600, 100),
-      cell("【香水柠檬-清洗（全国）】预", 20, 150), cell("处理7", 20, 175), cell("个", 600, 160),
-      cell("【冷萃咖啡液】-预制作", 20, 210), cell("3000", 470, 210), cell("毫升", 600, 210),
-      cell("【巧克力预调液-新】-预制作", 20, 260), cell("0", 490, 260), cell("克", 600, 260),
-      cell("其它信息", 20, 320), cell("林弘", 20, 380), cell("修改", 20, 385),
-      cell("系统", 20, 440), cell("新建", 20, 445), cell("备注：", 20, 500),
-    ]
+    // 青金桔数量框为空时水印数字与名称粘连；「处理7」为折行尾字与数量粘连；
+    // 页脚标题可能被读成「其它信息」或「其他信鼻沙」等错字，都不能进入名称流。
+    for footer in ["其它信息", "其他信鼻沙"] {
+      let cells = [
+        cell("预制物料名称", 20, 0), cell("实盘总库存", 440, 0),
+        cell("青金桔-预制作412", 20, 50), cell("个", 600, 50),
+        cell("【鲜橙-清洗（全国）】预处理", 20, 100), cell("5", 490, 100), cell("个", 600, 100),
+        cell("【香水柠檬-清洗（全国）】预", 20, 150), cell("处理7", 20, 175), cell("个", 600, 160),
+        cell("【冷萃咖啡液】-预制作", 20, 210), cell("3000", 470, 210), cell("毫升", 600, 210),
+        cell("【巧克力预调液-新】-预制作", 20, 260), cell("0", 490, 260), cell("克", 600, 260),
+        cell(footer, 20, 320), cell("林弘", 20, 380), cell("修改", 20, 385),
+        cell("系统", 20, 440), cell("新建", 20, 445), cell("备注：", 20, 500),
+      ]
+      let rows = try StockTableParser.preparedRows(cells)
+      XCTAssertEqual(rows.count, 5, "页脚标题「\(footer)」不能进入名称流")
+      XCTAssertEqual(StockOCRRefinement.compact(rows[0].cells[0]), "青金桔-预制作")
+      XCTAssertEqual(rows[2].cells[0], "【香水柠檬-清洗（全国）】预\n处理")
+      XCTAssertEqual(StockOCRRefinement.compact(rows[4].cells[0]), "【巧克力预调液-新】-预制作")
+      XCTAssertTrue(rows[0].inventoryUncertain ?? false, "空数量框不能被水印数字填充")
+    }
+  }
+
+  func testPreparedQuantityMixedWithWatermarkCharactersStaysUncertain() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
+    }
+    // 水印数字叠在空输入框上时可能被读成「2A12」；这种读数必须保留原文并标记待确认。
+    let cells = [cell("预制物料名称", 20, 0), cell("实盘总库存", 440, 0),
+      cell("青金桔-预制作", 20, 50), cell("2A12", 442, 50), cell("个", 600, 50),
+      cell("【冷萃咖啡液】-预制作", 20, 100), cell("3000", 470, 100), cell("毫升", 600, 100)]
     let rows = try StockTableParser.preparedRows(cells)
-    XCTAssertEqual(rows.count, 5)
-    XCTAssertEqual(StockOCRRefinement.compact(rows[0].cells[0]), "青金桔-预制作")
-    XCTAssertEqual(rows[2].cells[0], "【香水柠檬-清洗（全国）】预\n处理")
-    XCTAssertEqual(StockOCRRefinement.compact(rows[4].cells[0]), "【巧克力预调液-新】-预制作")
-    XCTAssertTrue(rows[0].inventoryUncertain ?? false, "空数量框不能被水印数字填充")
+    XCTAssertEqual(StockOCRRefinement.compact(rows[0].cells[1]), "2A12个")
+    XCTAssertTrue(rows[0].inventoryUncertain ?? false, "水印误读的数量必须标记待确认")
+    XCTAssertFalse(rows[1].inventoryUncertain ?? true)
   }
 
   func testPreparedQuantityUsesHorizontalOrderDespiteBaselineDifferences() throws {

@@ -36,6 +36,14 @@ enum StockOCRRefinement {
   static func compact(_ text: String) -> String {
     text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
   }
+  /// 页脚分节标题可能被误读成「其他信鼻沙」等错字；用前缀加长度兜底判断，
+  /// 避免页脚文本混入名称流或货物行解析。
+  static func isFooterLabel(_ text: String) -> Bool {
+    let value = compact(text)
+    if ["其他信息", "其它信息", "历史记录"].contains(where: { value.contains($0) }) { return true }
+    return value.count <= 6 && ["其他", "其它", "历史"].contains { value.hasPrefix($0) } &&
+      !value.contains("预制作") && !value.contains("预处理")
+  }
   static func coalesce(_ cells: [StockOCRCell]) -> [StockOCRCell] {
     let pattern = "[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}"
     var output: [StockOCRCell] = []
@@ -129,9 +137,7 @@ enum StockTableParser {
     let stockHeader = headers.stock
     let top = max(nameHeader.box.maxY, stockHeader.box.maxY)
     let bottom = ordered.first(where: { cell in
-      cell.box.minY > top && ["其他信息", "其它信息", "历史记录"].contains { label in
-        StockOCRRefinement.compact(cell.text).contains(label)
-      }
+      cell.box.minY > top && StockOCRRefinement.isFooterLabel(cell.text)
     })?.box.minY ?? .greatestFiniteMagnitude
     let boundary = (nameHeader.box.maxX + stockHeader.box.minX) / 2
     // 预制输入框的数字可在货物库存列起点左侧；用预制表头自身定位，保留左侧空白。
@@ -181,10 +187,12 @@ enum StockTableParser {
       // 数量和单位来自同一物料行的输入框，按水平方向读取，不能按基线的细微高低排序。
       stocks.sort { $0.box.minX == $1.box.minX ? $0.box.midY < $1.box.midY : $0.box.minX < $1.box.minX }
       let text = stocks.map(\.text).joined()
+      // 预制数量必须呈现为「数字+可选单位」；混入水印字符的读数一律待确认。
+      let quantityValid = StockOCRRefinement.compact(text).range(of:
+        "^[0-9]+(?:\\.[0-9]+)?(?:个|毫升|克)?$", options: .regularExpression) != nil
       return StockTextLine(cells: [parts.map(\.text).joined(separator: "\n"), text],
         confidence: (parts + stocks).map(\.confidence).min()!,
-        inventoryUncertain: stocks.isEmpty || (!blankInventory(text) &&
-          text.range(of: "[0-9]", options: .regularExpression) == nil), category: "prepared")
+        inventoryUncertain: stocks.isEmpty || !quantityValid, category: "prepared")
     }
   }
 
@@ -273,7 +281,8 @@ enum StockTableParser {
     let boundary = (nameHeader.box.maxX + stockHeader.box.minX) / 2
     let top = max(nameHeader.box.maxY, stockHeader.box.maxY)
     let footer = ordered.first(where: { cell in
-      cell.box.minY > top && ["预制物料信息", "其他信息", "历史记录"].contains(where: { compact(cell.text).contains($0) })
+      cell.box.minY > top && (StockOCRRefinement.isFooterLabel(cell.text) ||
+        compact(cell.text).contains("预制物料信息"))
     })?.box.minY ?? .greatestFiniteMagnitude
     let body = ordered.filter { $0.box.midY > top && $0.box.midY < footer }
     let left = body.filter { $0.box.minX < boundary && !compact($0.text).contains("货物规格名称") }
@@ -877,7 +886,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 11
+  static let recognitionRevision = 12
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1446,8 +1455,8 @@ enum StockHistoryProcessor {
     guard let header = cells.filter({ StockOCRRefinement.compact($0.text).contains("实盘总库存") })
       .min(by: { $0.box.minY < $1.box.minY }) else { throw StockHistoryError.invalid("复识别缺少库存表头") }
     let footer = cells.filter { cell in
-      cell.box.minY > header.box.maxY && ["预制物料信息", "其他信息", "历史记录"]
-        .contains { StockOCRRefinement.compact(cell.text).contains($0) }
+      cell.box.minY > header.box.maxY && (StockOCRRefinement.isFooterLabel(cell.text) ||
+        StockOCRRefinement.compact(cell.text).contains("预制物料信息"))
     }.map { $0.box.minY }.min() ?? CGFloat(original.height)
     var output = cells
     for start in stride(from: 0, to: original.height, by: 1800) {
@@ -1496,9 +1505,8 @@ enum StockHistoryProcessor {
       throw StockHistoryError.invalid("复核货号缺少货物表头")
     }
     let bottom = cells.filter { cell in
-      cell.box.minY > top && ["预制物料信息", "其他信息", "历史记录"].contains {
-        StockOCRRefinement.compact(cell.text).contains($0)
-      }
+      cell.box.minY > top && (StockOCRRefinement.isFooterLabel(cell.text) ||
+        StockOCRRefinement.compact(cell.text).contains("预制物料信息"))
     }.map { $0.box.minY }.min() ?? CGFloat(original.height)
     let left = max(0, (anchors.map { $0.box.minX }.min()! - 16).rounded(.down))
     let right = min(CGFloat(columnX), (anchors.map { $0.box.maxX }.max()! + 16).rounded(.up))
