@@ -6,6 +6,85 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  func testLowResolutionOCRLayoutScalesBothBlocksAndPixels() throws {
+    let narrow = try StockHistoryProcessor.ocrLayout(width: 320)
+    XCTAssertEqual(narrow.block, 696)
+    XCTAssertEqual(narrow.margin, 46)
+    XCTAssertEqual(narrow.scale, 3)
+    let daily = try StockHistoryProcessor.ocrLayout(width: 473)
+    XCTAssertEqual(daily.block, 1028)
+    XCTAssertEqual(daily.margin, 69)
+    XCTAssertEqual(daily.scale, 2)
+    for width in [828, 1280] {
+      let layout = try StockHistoryProcessor.ocrLayout(width: width)
+      XCTAssertEqual(layout.block, 1800)
+      XCTAssertEqual(layout.margin, 120)
+      XCTAssertEqual(layout.scale, 1)
+    }
+    XCTAssertThrowsError(try StockHistoryProcessor.ocrLayout(width: 0))
+    XCTAssertThrowsError(try StockHistoryProcessor.ocrLayout(width: -1))
+  }
+
+  func testCombinedHeadersSplitByTextWithoutSplittingProductSpecifications() {
+    for name in ["货物规格名称", "预制物料名称", "货 物 规 格 名 称"] {
+      let text = "\(name)   实 盘 总 库 存"
+      XCTAssertEqual(StockTableParser.headerRanges(text).map { String(text[$0]) },
+        [name, "实 盘 总 库 存"])
+    }
+    let product = "饮料 1L*12盒/箱 GS04465-08 2盒"
+    XCTAssertEqual(StockTableParser.headerRanges(product).map { String(product[$0]) }, [product])
+  }
+
+  func testGoodsHeadersRejectPreparedHeaderAndDifferentRows() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95,
+        box: CGRect(x: x, y: y, width: 80, height: 12))
+    }
+    let name = cell("货物规格名称", 20, 200)
+    let stock = cell("实盘总库存", 230, 201)
+    let prepared = [cell("预制物料名称", 20, 900), cell("实盘总库存", 230, 900)]
+    XCTAssertNil(StockTableParser.goodsHeaders([name] + prepared))
+    XCTAssertNil(StockTableParser.goodsHeaders(prepared))
+    XCTAssertNil(StockTableParser.goodsHeaders([name, cell("实盘总库存", 230, 250)]))
+    XCTAssertNil(StockTableParser.goodsHeaders([name, cell("实盘总库存", 0, 200)]))
+    XCTAssertNil(StockTableParser.goodsHeaders([name, cell("实盘库存", 230, 200)]))
+    let headers = try XCTUnwrap(StockTableParser.goodsHeaders(prepared + [stock, name]))
+    XCTAssertEqual(headers.stock.box, stock.box)
+    XCTAssertThrowsError(try StockTableParser.rows([name] + prepared))
+  }
+
+  func testRealNarrowWeeklyHeaderRecoveryPreservesOriginalCoordinates() throws {
+    let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "inventory_weekly_20260925",
+      withExtension: "jpg", subdirectory: "Fixtures"))
+    let original = try XCTUnwrap(UIImage(contentsOfFile: url.path)?.cgImage)
+    XCTAssertEqual(original.width, 320)
+    let headers = try XCTUnwrap(StockHistoryProcessor.recoverGoodsHeaders(original,
+      clean: StockHistoryProcessor.textImage(original)))
+    XCTAssertEqual(StockOCRRefinement.compact(headers.name.text), "货物规格名称")
+    XCTAssertEqual(StockOCRRefinement.compact(headers.stock.text), "实盘总库存")
+    XCTAssertGreaterThan(headers.stock.box.minX, headers.name.box.maxX)
+    for cell in [headers.name, headers.stock] {
+      XCTAssertGreaterThanOrEqual(cell.box.minX, 0)
+      XCTAssertLessThanOrEqual(cell.box.maxX, CGFloat(original.width))
+      XCTAssertGreaterThan(cell.box.minY, 180)
+      XCTAssertLessThan(cell.box.maxY, 250)
+    }
+  }
+
+  func testBlankImageCannotInventGoodsHeaders() throws {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 800), format: format).image { context in
+      UIColor.white.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 320, height: 800))
+    }
+    let original = try XCTUnwrap(image.cgImage)
+    XCTAssertNil(try StockHistoryProcessor.recoverGoodsHeaders(original, clean: original))
+    XCTAssertThrowsError(try StockHistoryProcessor.recognize(image))
+    let different = try XCTUnwrap(original.cropping(to: CGRect(x: 0, y: 0, width: 300, height: 800)))
+    XCTAssertThrowsError(try StockHistoryProcessor.recoverGoodsHeaders(original, clean: different))
+  }
+
   func testProductCodeCanonicalizationDoesNotInventDigits() {
     XCTAssertEqual(StockOCRRefinement.canonicalProductCode("gs09637－02"), "GS09637-02")
     XCTAssertEqual(StockOCRRefinement.canonicalProductCode(" GS09889-03 "), "GS09889-03")

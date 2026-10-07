@@ -117,6 +117,33 @@ enum StockOCRRefinement {
 }
 
 enum StockTableParser {
+  static func headerRanges(_ text: String) -> [Range<String.Index>] {
+    precondition(!text.isEmpty, "表头识别文字不能为空")
+    if let name = text.range(of:
+      "(?:货\\s*物\\s*规\\s*格\\s*名\\s*称|预\\s*制\\s*物\\s*料\\s*名\\s*称)",
+      options: .regularExpression),
+      let stock = text.range(of: "实\\s*盘\\s*总\\s*库\\s*存", options: .regularExpression) {
+      return [name, stock]
+    }
+    return [text.startIndex..<text.endIndex]
+  }
+
+  /// 库存标题也出现在预制表中；只有同一行左右配对的货物表头才能定位货物库存列。
+  static func goodsHeaders(_ cells: [StockOCRCell]) -> (name: StockOCRCell, stock: StockOCRCell)? {
+    let names = cells.filter { StockOCRRefinement.compact($0.text).contains("货物规格名称") }
+      .sorted { $0.box.minY < $1.box.minY }
+    for name in names {
+      if let stock = cells.filter({
+        StockOCRRefinement.compact($0.text).contains("实盘总库存") &&
+          $0.box.minX > name.box.maxX &&
+          abs($0.box.midY - name.box.midY) <= max($0.box.height, name.box.height)
+      }).min(by: { abs($0.box.midY - name.box.midY) < abs($1.box.midY - name.box.midY) }) {
+        return (name, stock)
+      }
+    }
+    return nil
+  }
+
   static func preparedHeaders(_ cells: [StockOCRCell]) -> (name: StockOCRCell, stock: StockOCRCell)? {
     let names = cells.filter { StockOCRRefinement.compact($0.text).contains("预制物料名称") }
       .sorted { $0.box.minY < $1.box.minY }
@@ -280,12 +307,11 @@ enum StockTableParser {
     func compact(_ text: String) -> String {
       text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
     }
-    guard let nameHeader = ordered.first(where: { compact($0.text).contains("货物规格名称") }),
-      let stockHeader = ordered.first(where: {
-        compact($0.text).contains("实盘总库存") && abs($0.box.midY - nameHeader.box.midY) < 50
-      }), stockHeader.box.minX > nameHeader.box.maxX else {
+    guard let headers = goodsHeaders(ordered) else {
       throw StockHistoryError.invalid("未识别到「货物规格名称 / 实盘总库存」表头，请确认长图包含表头")
     }
+    let nameHeader = headers.name
+    let stockHeader = headers.stock
     let boundary = (nameHeader.box.maxX + stockHeader.box.minX) / 2
     let top = max(nameHeader.box.maxY, stockHeader.box.maxY)
     let footer = ordered.first(where: { cell in
@@ -902,7 +928,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 13
+  static let recognitionRevision = 14
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1189,6 +1215,63 @@ enum StockHistoryProcessor {
     }
   }
 
+  /// 分块保持接近原始手机截图的宽高比；只放大当前块，避免整张长图占用数倍内存。
+  static func ocrLayout(width: Int) throws -> (block: Int, margin: Int, scale: Int) {
+    guard width > 0 else { throw StockHistoryError.invalid("识别图像宽度必须为正数") }
+    let ratio = min(1, Double(width) / 828)
+    return (max(256, Int((1800 * ratio).rounded())),
+      max(24, Int((120 * ratio).rounded())),
+      width < 600 ? min(4, Int(ceil(828 / Double(width)))) : 1)
+  }
+
+  static func enlargedOCRTile(_ image: CGImage, scale: Int) throws -> CGImage {
+    guard (1...4).contains(scale) else { throw StockHistoryError.invalid("识别放大倍数无效") }
+    if scale == 1 { return image }
+    guard let context = CGContext(data: nil, width: image.width * scale, height: image.height * scale,
+      bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else {
+      throw StockHistoryError.invalid("无法分配分块识别图像")
+    }
+    context.interpolationQuality = .high
+    context.draw(image, in: CGRect(x: 0, y: 0, width: image.width * scale, height: image.height * scale))
+    guard let enlarged = context.makeImage() else { throw StockHistoryError.invalid("无法放大识别分块") }
+    return enlarged
+  }
+
+  /// 只接受真实识别到的成对标题；左右标题必须对齐，原图与去水印图读数和位置一致。
+  static func recoverGoodsHeaders(_ original: CGImage, clean: CGImage,
+    candidates: [StockOCRCell] = []) throws -> (name: StockOCRCell, stock: StockOCRCell)? {
+    guard original.width == clean.width, original.height == clean.height else {
+      throw StockHistoryError.invalid("货物表头复核图像尺寸不一致")
+    }
+    let height = CGFloat(original.height)
+    let bandHeight = CGFloat(original.width * 2)
+    var tops = Set<Int>([0])
+    for cell in candidates where StockOCRRefinement.compact(cell.text).contains("货物") ||
+      StockOCRRefinement.compact(cell.text).contains("实盘") {
+      tops.insert(max(0, Int(floor(cell.box.minY - CGFloat(original.width) * 0.2))))
+    }
+    for top in tops.sorted() {
+      guard CGFloat(top) < height else { throw StockHistoryError.invalid("表头候选坐标超出原图") }
+      let crop = CGRect(x: 0, y: CGFloat(top), width: original.width, height: min(bandHeight, height - CGFloat(top)))
+      for scale in [2, 4] {
+        let raw = try inventoryRow(original, crop: crop, scale: scale, diagnosticContext: "货物表头原图")
+        let enhanced = try inventoryRow(clean, crop: crop, scale: scale, diagnosticContext: "货物表头去水印")
+        guard let rawHeaders = StockTableParser.goodsHeaders(raw),
+          let cleanHeaders = StockTableParser.goodsHeaders(enhanced),
+          StockOCRRefinement.compact(rawHeaders.name.text) == StockOCRRefinement.compact(cleanHeaders.name.text),
+          StockOCRRefinement.compact(rawHeaders.stock.text) == StockOCRRefinement.compact(cleanHeaders.stock.text),
+          StockOCRRefinement.match(rawHeaders.name, in: [cleanHeaders.name]) != nil,
+          StockOCRRefinement.match(rawHeaders.stock, in: [cleanHeaders.stock]) != nil else { continue }
+        return (
+          StockOCRCell(text: rawHeaders.name.text,
+            confidence: min(rawHeaders.name.confidence, cleanHeaders.name.confidence), box: rawHeaders.name.box),
+          StockOCRCell(text: rawHeaders.stock.text,
+            confidence: min(rawHeaders.stock.confidence, cleanHeaders.stock.confidence), box: rawHeaders.stock.box))
+      }
+    }
+    return nil
+  }
+
   static func recognize(_ image: UIImage, progress: @escaping (String) -> Void = { _ in }) throws -> [StockTextLine] {
     guard let cg = image.cgImage else { throw StockHistoryError.invalid("无法读取截图像素") }
     StockDiagnostics.log("识别开始 图像=\(cg.width)x\(cg.height)")
@@ -1196,20 +1279,31 @@ enum StockHistoryProcessor {
     var cells: [StockOCRCell] = []
     var stockColumnStart: CGFloat?
     // 对长图分块识别，用中心点归属消除块边缘重复；不按文本去重，保留真实重复行。
-    let block = 1800
-    let margin = 120
+    let layout = try ocrLayout(width: cg.width)
+    let block = layout.block
+    let margin = layout.margin
+    StockDiagnostics.log("识别布局 block=\(block) margin=\(margin) scale=\(layout.scale)")
+    if layout.scale > 1 {
+      progress("正在放大识别货物表头")
+      if let headers = try recoverGoodsHeaders(cg, clean: recognitionImage) {
+        cells.append(contentsOf: [headers.name, headers.stock])
+        stockColumnStart = headers.stock.box.midX - headers.stock.box.height * 0.75
+      }
+    }
     for start in stride(from: 0, to: cg.height, by: block) {
       try autoreleasepool {
         let top = max(0, start - margin)
         let bottom = min(cg.height, start + block + margin)
         progress("正在识别文字 · \(start / block + 1)/\((cg.height + block - 1) / block)")
-        guard let tile = recognitionImage.cropping(to: CGRect(x: 0, y: top, width: cg.width, height: bottom - top)) else {
+        guard let sourceTile = recognitionImage.cropping(to: CGRect(x: 0, y: top, width: cg.width, height: bottom - top)) else {
           throw StockHistoryError.invalid("无法分块读取长截图")
         }
+        let tile = try enlargedOCRTile(sourceTile, scale: layout.scale)
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = ["zh-Hans", "en-US"]
         request.usesLanguageCorrection = false
+        request.minimumTextHeight = Float(min(0.02, 6 / Double(sourceTile.height)))
         try VNImageRequestHandler(cgImage: tile, options: [:]).perform([request])
         guard let results = request.results else { throw StockHistoryError.invalid("文字识别未返回结果") }
         for observation in results {
@@ -1227,15 +1321,19 @@ enum StockHistoryProcessor {
           do {
             let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { throw StockHistoryError.invalid("识别到空文字，请检查截图") }
-            if rect.midY >= Double(start), rect.midY < Double(min(cg.height, start + block)),
-              text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression).contains("实盘总库存") {
-              stockColumnStart = rect.midX - rect.height * 0.75
+            let original = candidate.string
+            if stockColumnStart == nil, rect.midY >= Double(start), rect.midY < Double(min(cg.height, start + block)),
+              let title = original.range(of: "实\\s*盘\\s*总\\s*库\\s*存", options: .regularExpression) {
+              guard let region = try candidate.boundingBox(for: title) else {
+                throw StockHistoryError.invalid("无法定位库存表头文字")
+              }
+              let box = region.boundingBox
+              stockColumnStart = box.midX * Double(cg.width) - box.height * Double(bottom - top) * 0.75
             }
             // Vision 可能把同一高度的品名续行和库存合并。根据字符间真实空白拆列，
             // 不能按字符串中的数字拆分，规格本身也包含数字。
-            let original = candidate.string
-            var ranges = [original.startIndex..<original.endIndex]
-            if let column = stockColumnStart, rect.minX < column, rect.maxX > column {
+            var ranges = StockTableParser.headerRanges(original)
+            if ranges.count == 1, let column = stockColumnStart, rect.minX < column, rect.maxX > column {
               var characters: [(Range<String.Index>, CGRect)] = []
               for index in original.indices where !original[index].isWhitespace {
                 let range = index..<original.index(after: index)
@@ -1267,9 +1365,17 @@ enum StockHistoryProcessor {
         }
       }
     }
-    guard let header = cells.first(where: {
-      $0.text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression).contains("实盘总库存")
-    }) else { throw StockHistoryError.invalid("未识别到实盘总库存表头") }
+    var headers = StockTableParser.goodsHeaders(cells)
+    if headers == nil {
+      progress("正在放大复核货物表头")
+      headers = try recoverGoodsHeaders(cg, clean: recognitionImage, candidates: cells)
+      if let recovered = headers { cells.append(contentsOf: [recovered.name, recovered.stock]) }
+    }
+    guard let headers = headers else {
+      StockDiagnostics.log("货物表头识别失败 前部候选=\(cells.filter { $0.box.minY < CGFloat(cg.width * 2) }.map { "\($0.text)@\($0.box) confidence=\($0.confidence)" })")
+      throw StockHistoryError.invalid("放大复核后仍未识别到同一行的货物规格名称和实盘总库存，请核对原图清晰度")
+    }
+    let header = headers.stock
     // 单独识别库存列，避免横跨两列的长文字吞掉短数量。保留完整品名识别，
     // 右列裁剪从表头中心略向左开始；该页面的数量统一左对齐。
     let columnX = Int((header.box.midX - header.box.height * 0.75).rounded(.down))
@@ -1281,14 +1387,16 @@ enum StockHistoryProcessor {
         let top = max(0, start - margin)
         let bottom = min(cg.height, start + block + margin)
         progress("正在识别库存列 · \(start / block + 1)/\((cg.height + block - 1) / block)")
-        guard let tile = recognitionImage.cropping(to: CGRect(x: columnX, y: top,
+        guard let sourceTile = recognitionImage.cropping(to: CGRect(x: columnX, y: top,
           width: cg.width - columnX, height: bottom - top)) else {
           throw StockHistoryError.invalid("无法读取库存列")
         }
+        let tile = try enlargedOCRTile(sourceTile, scale: layout.scale)
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = ["zh-Hans", "en-US"]
         request.usesLanguageCorrection = false
+        request.minimumTextHeight = Float(min(0.02, 6 / Double(sourceTile.height)))
         try VNImageRequestHandler(cgImage: tile, options: [:]).perform([request])
         guard let results = request.results else { throw StockHistoryError.invalid("库存识别未返回结果") }
         for observation in results {
@@ -1299,9 +1407,9 @@ enum StockHistoryProcessor {
           let dy = observation.topRight.y - observation.topLeft.y
           if abs(dy) * Double(tile.height) > abs(dx) * Double(tile.width) * 0.25 { continue }
           let box = observation.boundingBox
-          let rect = CGRect(x: Double(columnX) + box.minX * Double(tile.width),
-            y: Double(top) + (1 - box.maxY) * Double(tile.height),
-            width: box.width * Double(tile.width), height: box.height * Double(tile.height))
+          let rect = CGRect(x: Double(columnX) + box.minX * Double(sourceTile.width),
+            y: Double(top) + (1 - box.maxY) * Double(sourceTile.height),
+            width: box.width * Double(sourceTile.width), height: box.height * Double(sourceTile.height))
           if rect.midY >= Double(start), rect.midY < Double(min(cg.height, start + block)),
             rect.midY > header.box.maxY {
             let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1765,7 +1873,8 @@ enum StockHistoryProcessor {
     request.recognitionLevel = recognitionLevel
     request.recognitionLanguages = requiredPattern == nil ? ["zh-Hans", "en-US"] : ["en-US"]
     request.usesLanguageCorrection = false
-    if requiredPattern != nil { request.minimumTextHeight = 0.01 }
+    request.minimumTextHeight = Float(min(requiredPattern == nil ? 0.02 : 0.01,
+      6 / Double(tile.height)))
     try VNImageRequestHandler(cgImage: enlarged, options: [:]).perform([request])
     guard let results = request.results else { throw StockHistoryError.invalid("库存行识别未返回结果") }
     if let label = diagnosticContext {
@@ -1804,11 +1913,11 @@ enum StockHistoryProcessor {
           $0..<original.index(after: $0)
         }
       }
-      if let nameRange = original.range(of: "预\\s*制\\s*物\\s*料\\s*名\\s*称", options: .regularExpression),
-        let stockRange = original.range(of: "实\\s*盘\\s*总\\s*库\\s*存", options: .regularExpression) {
+      let headers = StockTableParser.headerRanges(original)
+      if headers.count == 2 {
         // 两个表头可能被 Vision 合成一条观察结果，按真实文字范围分别取得坐标。
         // 库存表头的左缘在货物数量列左侧，不能用数量列阈值判断是否拆分。
-        ranges = [nameRange, stockRange]
+        ranges = headers
       } else if let column = stockColumnStart {
         var characters: [(Range<String.Index>, CGRect)] = []
         for index in original.indices where !original[index].isWhitespace {
