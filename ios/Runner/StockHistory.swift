@@ -1252,7 +1252,7 @@ enum StockHistoryProcessor {
     }
     for top in tops.sorted() {
       guard CGFloat(top) < height else { throw StockHistoryError.invalid("表头候选坐标超出原图") }
-      let crop = CGRect(x: 0, y: CGFloat(top), width: original.width, height: min(bandHeight, height - CGFloat(top)))
+      let crop = CGRect(x: 0, y: CGFloat(top), width: CGFloat(original.width), height: min(bandHeight, height - CGFloat(top)))
       for scale in [2, 4] {
         let raw = try inventoryRow(original, crop: crop, scale: scale, diagnosticContext: "货物表头原图")
         let enhanced = try inventoryRow(clean, crop: crop, scale: scale, diagnosticContext: "货物表头去水印")
