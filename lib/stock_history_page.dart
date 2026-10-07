@@ -95,6 +95,16 @@ class _StockHistoryPageState extends State<StockHistoryPage>
     if (document == null || !mounted) return;
     await _open(document);
   });
+
+  /// 把最近一次识别任务的诊断日志交给系统分享面板，用于定位解析失败。
+  Future<void> _shareDiagnostics() async {
+    try {
+      await _store.shareDiagnostics();
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _error = error.message ?? error.code);
+    }
+  }
+
   Future<void> _open(StockDocument document) async {
     await Navigator.of(context).push<StockDocument>(
       MaterialPageRoute(builder: (_) => StockDocumentPage(document: document)),
@@ -429,9 +439,20 @@ class _StockHistoryPageState extends State<StockHistoryPage>
                 if (_error != null)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 12),
-                    child: Text(
-                      _error!,
-                      style: TextStyle(color: theme.colorScheme.error),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _error!,
+                          style: TextStyle(color: theme.colorScheme.error),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: _busy ? null : _shareDiagnostics,
+                          icon: const Icon(Icons.bug_report_outlined, size: 18),
+                          label: const Text('导出诊断日志'),
+                        ),
+                      ],
                     ),
                   ),
                 const SizedBox(height: 20),
@@ -614,6 +635,9 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
     if (mounted) _notify('已打开分享面板，可发送长图到微信');
   });
 
+  /// 把最近一次识别任务的诊断日志交给系统分享面板，用于定位解析失败。
+  Future<void> _shareDiagnostics() => _run(() => _store.shareDiagnostics());
+
   void _notify(String message) =>
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(message)));
@@ -750,8 +774,15 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                   ? '识别结果已保存，可直接搜索查询。发现错误时点击铅笔修改，也可查看原图对照。'
                   : '原始长图已保留，货物表尚未整理完成。可切换查看长图核对。',
             ),
-            if (_error != null)
+            if (_error != null) ...[
               Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _sharing ? null : _shareDiagnostics,
+                icon: const Icon(Icons.bug_report_outlined, size: 18),
+                label: const Text('导出诊断日志'),
+              ),
+            ],
             const SizedBox(height: 16),
             SegmentedButton<bool>(
               segments: const [

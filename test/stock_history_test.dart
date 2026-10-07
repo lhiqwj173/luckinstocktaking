@@ -502,6 +502,31 @@ void main() {
     expect(find.text('原图损坏'), findsOneWidget);
   });
 
+  testWidgets('解析失败后可从错误处导出诊断日志', (tester) async {
+    final calls = <String>[];
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      calls.add(call.method);
+      if (call.method == 'list') {
+        throw PlatformException(
+          code: 'OCR_FAILED',
+          message: '预制物料名称缺少制作/处理尾字，不能与下一行合并，请核对原图',
+        );
+      }
+      if (call.method == 'shareDiagnostics') return null;
+      throw StateError('意外的平台请求：${call.method}');
+    });
+    await tester.pumpWidget(const MaterialApp(home: StockHistoryPage()));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('预制物料名称缺少制作/处理尾字，不能与下一行合并，请核对原图'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('导出诊断日志'));
+    await tester.pumpAndSettle();
+    expect(calls, ['list', 'shareDiagnostics']);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('删除需确认，失败保留记录，成功只删除指定单据', (tester) async {
     final remaining = [
       record(),

@@ -75,6 +75,20 @@ class RunnerTests: XCTestCase {
     XCTAssertThrowsError(try StockTableParser.preparedRows(cells.filter { $0.text != "处理" }))
   }
 
+  func testDiagnosticsLogCapturesLatestRecognitionTaskOnly() throws {
+    StockDiagnostics.begin("单元测试任务")
+    StockDiagnostics.log("第一条诊断")
+    let first = try String(contentsOf: try StockDiagnostics.url(), encoding: .utf8)
+    XCTAssertTrue(first.contains("单元测试任务"))
+    XCTAssertTrue(first.contains("第一条诊断"))
+    StockDiagnostics.begin("第二次任务")
+    StockDiagnostics.log("第二条诊断")
+    let second = try String(contentsOf: try StockDiagnostics.url(), encoding: .utf8)
+    XCTAssertFalse(second.contains("第一条诊断"), "开始新任务必须清掉上一次的日志")
+    XCTAssertTrue(second.contains("第二次任务"))
+    XCTAssertTrue(second.contains("第二条诊断"))
+  }
+
   func testPreparedRowsTolerateGluedQuantitiesAndMisreadFooterTitle() throws {
     func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
       StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))

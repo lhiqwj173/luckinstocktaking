@@ -306,4 +306,10 @@ class StockHistoryStore {
   Future<void> shareImage(StockDocument document) async {
     await channel.invokeMethod<void>('shareImage', document.id);
   }
+
+  /// 导出最近一次识别任务的诊断日志，用于解析失败时定位 OCR 问题。
+  /// 没有日志时平台明确报错，不会分享空文件。
+  Future<void> shareDiagnostics() async {
+    await channel.invokeMethod<void>('shareDiagnostics');
+  }
 }

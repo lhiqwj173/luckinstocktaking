@@ -137,24 +137,30 @@ enum StockTableParser {
     // 预制输入框的数字可在货物库存列起点左侧；用预制表头自身定位，保留左侧空白。
     let quantityLeft = max(boundary, stockHeader.box.minX - stockHeader.box.height)
     let body = ordered.filter { $0.box.midY > top && $0.box.midY < bottom }
+    StockDiagnostics.log("预制表头 name=\(nameHeader.box) stock=\(stockHeader.box) boundary=\(boundary) top=\(top) bottom=\(bottom) body=\(body.count)")
     var names: [[StockOCRCell]] = []
     var current: [StockOCRCell] = []
     for cell in body where cell.box.minX < boundary {
       // 分列失败时数量框数字、单位或水印残留可能留在名称列；它们不属于名称，
       // 不能参与行划分，也不能触发跨行缺字判断。
-      if isStrayPreparedCell(cell) { continue }
+      let stray = isStrayPreparedCell(cell)
+      StockDiagnostics.log("预制名称候选 text=\(cell.text) box=\(cell.box) stray=\(stray)")
+      if stray { continue }
       if let previous = current.last,
         cell.box.minY - previous.box.maxY > max(previous.box.height, cell.box.height) * 1.25 {
+        StockDiagnostics.log("预制行缺少尾字 previous=\(previous.text)@\(previous.box) cell=\(cell.text)@\(cell.box) current=\(current.map(\.text))")
         throw StockHistoryError.invalid("预制物料名称缺少制作/处理尾字，不能与下一行合并，请核对原图")
       }
       current.append(cell)
       let name = StockOCRRefinement.compact(current.map(\.text).joined())
       if let length = preparedNameLength(name) {
         // 尾字后误并入的数量、单位或水印字符不计入名称。
+        StockDiagnostics.log("预制行闭合 name=\(name) length=\(length)")
         names.append(truncate(current, to: length))
         current = []
       }
     }
+    StockDiagnostics.log("预制名称解析完成 rows=\(names.count) 未闭合=\(current.map(\.text))")
     guard !names.isEmpty, current.isEmpty else {
       throw StockHistoryError.invalid("预制物料名称不完整，无法可靠划分行，请核对原图")
     }
@@ -164,17 +170,13 @@ enum StockTableParser {
       let end = index + 1 == names.count ? bottom :
         (parts.map { $0.box.maxY }.max()! + names[index + 1].map { $0.box.minY }.min()!) / 2
       var stocks = body.filter { $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end }
-      #if DEBUG
       let rowName = StockOCRRefinement.compact(parts.map(\.text).joined())
-      print("[StockOCR] 预制行 name=\(rowName) start=\(start) end=\(end) boundary=\(boundary) quantityLeft=\(quantityLeft) initial=\(stocks.map { "\($0.text)@\($0.box)" })")
-      #endif
+      StockDiagnostics.log("预制行 name=\(rowName) start=\(start) end=\(end) boundary=\(boundary) quantityLeft=\(quantityLeft) initial=\(stocks.map { "\($0.text)@\($0.box)" })")
       if let retry = retryInventory, let recovered = try retry(start, end, quantityLeft) {
         stocks = recovered.filter {
           $0.box.minX >= boundary && $0.box.midY >= start && $0.box.midY < end
         }
-        #if DEBUG
-        print("[StockOCR] 预制复核配对 name=\(rowName) recovered=\(recovered.map { "\($0.text)@\($0.box)" }) retained=\(stocks.map { "\($0.text)@\($0.box)" })")
-        #endif
+        StockDiagnostics.log("预制复核配对 name=\(rowName) recovered=\(recovered.map { "\($0.text)@\($0.box)" }) retained=\(stocks.map { "\($0.text)@\($0.box)" })")
       }
       // 数量和单位来自同一物料行的输入框，按水平方向读取，不能按基线的细微高低排序。
       stocks.sort { $0.box.minX == $1.box.minX ? $0.box.midY < $1.box.midY : $0.box.minX < $1.box.minX }
@@ -582,7 +584,7 @@ enum StockExporter {
 
   /// `onFinish` 在分享面板关闭后调用，让调用方在整个面板存活期间保持忙碌状态；
   /// 面板还开着时再次 present 会让 UIKit 报 already presenting 警告。
-  private static func share(url: URL, cleanup: URL?, onFinish: @escaping () -> Void) throws {
+  fileprivate static func share(url: URL, cleanup: URL?, onFinish: @escaping () -> Void) throws {
     guard FileManager.default.fileExists(atPath: url.path) else {
       throw StockHistoryError.invalid("待分享的文件不存在")
     }
@@ -618,6 +620,77 @@ enum StockExporter {
     }
     while let presented = presenter.presentedViewController { presenter = presented }
     return presenter
+  }
+}
+
+/// 每次识别任务的诊断日志，写入 Documents/StockHistory/diagnostics.log。
+/// 所有构建（含 release）都会记录，用户可在解析失败后通过分享面板导出给开发者定位 OCR 问题。
+/// 日志文件不属于历史盘点单数据，list/records/order 只扫描目录，不会与之冲突。
+enum StockDiagnostics {
+  static let fileName = "diagnostics.log"
+  private static let lock = NSLock()
+  private static var handle: FileHandle?
+  private static let formatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "HH:mm:ss.SSS"
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    return formatter
+  }()
+
+  static func url() throws -> URL {
+    try StockHistoryStorage.root().appendingPathComponent(fileName)
+  }
+
+  /// 开始一次识别任务：清空旧日志并写入任务标题，保证导出的是本次复现的现场。
+  static func begin(_ label: String) {
+    lock.lock(); defer { lock.unlock() }
+    handle?.closeFile()
+    handle = nil
+    do {
+      let target = try url()
+      _ = FileManager.default.createFile(atPath: target.path, contents: nil)
+      handle = try FileHandle(forWritingTo: target)
+      append("==== \(label) \(ISO8601DateFormatter().string(from: Date())) ====")
+    } catch {
+      NSLog("[StockOCR] 诊断日志无法创建：%@", String(describing: error))
+    }
+  }
+
+  /// 记录一行诊断；DEBUG 构建同时打印到控制台，保留原有的调试通道。
+  static func log(_ message: String) {
+    #if DEBUG
+    print("[StockOCR] \(message)")
+    #endif
+    lock.lock(); defer { lock.unlock() }
+    guard handle != nil else {
+      NSLog("[StockOCR] %@", message)
+      return
+    }
+    append("[StockOCR] \(formatter.string(from: Date())) \(message)")
+  }
+
+  private static func append(_ line: String) {
+    guard let handle = handle else { return }
+    do {
+      try handle.write(contentsOf: Data("\(line)\n".utf8))
+    } catch {
+      NSLog("[StockOCR] 诊断日志写入失败：%@", String(describing: error))
+    }
+  }
+
+  /// 把日志交给系统分享面板导出；没有日志时明确报错，不导出空文件。
+  static func share(onFinish: @escaping () -> Void) throws {
+    lock.lock(); defer { lock.unlock() }
+    try handle?.synchronize()
+    let target = try url()
+    guard FileManager.default.fileExists(atPath: target.path) else {
+      throw StockHistoryError.invalid("暂无可导出的诊断日志，请先复现一次解析失败")
+    }
+    let data = try Data(contentsOf: target)
+    guard !data.isEmpty else {
+      throw StockHistoryError.invalid("暂无可导出的诊断日志，请先复现一次解析失败")
+    }
+    try StockExporter.share(url: target, cleanup: nil, onFinish: onFinish)
   }
 }
 
@@ -807,6 +880,7 @@ enum StockHistoryProcessor {
   static let recognitionRevision = 11
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
+    StockDiagnostics.begin("截图组导入")
     let first = try StockScreenshotInput.ordered(inputs)[0]
     guard let source = UIImage(contentsOfFile: first.url.path) else {
       throw StockHistoryError.invalid("无法读取首张截图中的盘点信息")
@@ -921,6 +995,7 @@ enum StockHistoryProcessor {
   }
   static func process(url: URL, video: Bool, crop: StockCrop, documentID: String = UUID().uuidString,
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
+    StockDiagnostics.begin(video ? "录屏导入" : "长截图导入")
     let image: UIImage
     let title: String
     if video {
@@ -1091,6 +1166,7 @@ enum StockHistoryProcessor {
 
   static func recognize(_ image: UIImage, progress: @escaping (String) -> Void = { _ in }) throws -> [StockTextLine] {
     guard let cg = image.cgImage else { throw StockHistoryError.invalid("无法读取截图像素") }
+    StockDiagnostics.log("识别开始 图像=\(cg.width)x\(cg.height)")
     let recognitionImage = try textImage(cg)
     var cells: [StockOCRCell] = []
     var stockColumnStart: CGFloat?
@@ -1173,6 +1249,7 @@ enum StockHistoryProcessor {
     // 右列裁剪从表头中心略向左开始；该页面的数量统一左对齐。
     let columnX = Int((header.box.midX - header.box.height * 0.75).rounded(.down))
     guard columnX > 0, columnX < cg.width else { throw StockHistoryError.invalid("库存列位置无效") }
+    StockDiagnostics.log("库存表头 header=\(header.text)@\(header.box) columnX=\(columnX) 首轮cells=\(cells.count)")
     cells.removeAll { $0.box.minX >= header.box.minX && $0.box.midY > header.box.maxY }
     for start in stride(from: 0, to: cg.height, by: block) {
       try autoreleasepool {
@@ -1212,6 +1289,7 @@ enum StockHistoryProcessor {
     cells = try recoverProductCodes(cells, original: cg, clean: recognitionImage,
       columnX: columnX, progress: progress)
     cells = try refine(cells, original: cg, clean: recognitionImage, columnX: columnX, progress: progress)
+    StockDiagnostics.log("复核完成 cells=\(cells.count)")
     let goods = try StockTableParser.rows(cells, retryName: { start, end, left in
       progress("正在复核名称和规格")
       let top = max(0, start.rounded(.down))
@@ -1251,10 +1329,12 @@ enum StockHistoryProcessor {
     }).min(by: { $0.box.minY < $1.box.minY }) {
       progress("正在识别预制物料")
       let top = max(0, (marker.box.minY - 12).rounded(.down))
+      StockDiagnostics.log("预制分区 marker=\(marker.text)@\(marker.box) cropTop=\(top) 图像=\(cg.width)x\(cg.height)")
       // 预制数量是浅灰色输入框文字，必须读原图，不能用去水印图抹掉真实数量。
       var prepared = try inventoryRow(cg,
         crop: CGRect(x: 0, y: top, width: CGFloat(cg.width), height: CGFloat(cg.height) - top),
         scale: 2, stockColumnStart: CGFloat(columnX))
+      StockDiagnostics.log("预制首轮 cells=\(prepared.map { "\($0.text)@\($0.box)" })")
       if StockTableParser.preparedHeaders(prepared) == nil {
         progress("正在复核预制物料表头")
         // 原图负责保留浅色数量；去水印图只复核表头，避免水印与标题合并。
@@ -1308,9 +1388,7 @@ enum StockHistoryProcessor {
           cell.box.minX >= x && cell.box.midY >= start && cell.box.midY < end &&
             StockOCRRefinement.compact(cell.text).range(of: "^(?:个|毫升|克)$", options: .regularExpression) != nil
         }
-        #if DEBUG
-        print("[StockOCR] 预制单位定位 crop=\(crop) units=\(units.map { "\($0.text)@\($0.box)" })")
-        #endif
+        StockDiagnostics.log("预制单位定位 crop=\(crop) units=\(units.map { "\($0.text)@\($0.box)" })")
         if units.count == 1 {
           let unit = units[0]
           let numberTop = max(y, (unit.box.midY - unit.box.height * 1.5).rounded(.down))
@@ -1351,13 +1429,13 @@ enum StockHistoryProcessor {
             return [number, unit]
           }
         }
-        #if DEBUG
-        print("[StockOCR] 预制数量未恢复 crop=\(crop) unitCount=\(units.count)")
-        #endif
+        StockDiagnostics.log("预制数量未恢复 crop=\(crop) unitCount=\(units.count)")
         return nil
       }
+      StockDiagnostics.log("预制行完成 rows=\(preparedRows.count)")
       return goods + preparedRows
     }
+    StockDiagnostics.log("识别完成 货物行=\(goods.count)")
     return goods
   }
 
@@ -1568,9 +1646,7 @@ enum StockHistoryProcessor {
     let faint = try textImage(compact, preserveFaintText: true)
     let contrast = try textImage(compact, isolatedNumber: true)
     let compactBounds = CGRect(x: 0, y: 0, width: width, height: height)
-    #if DEBUG
-    print("[StockOCR] 预制紧凑画布 number=\(numberBox) unit=\(unitBox) ink=\(ink) size=\(width)x\(height)")
-    #endif
+    StockDiagnostics.log("预制紧凑画布 number=\(numberBox) unit=\(unitBox) ink=\(ink) size=\(width)x\(height)")
     for scale in [2, 4] {
       var readings: [(String, Double)] = []
       for (label, image) in [("原图", compact), ("浅灰增强", faint), ("局部增强", contrast)] {
@@ -1616,7 +1692,6 @@ enum StockHistoryProcessor {
     if requiredPattern != nil { request.minimumTextHeight = 0.01 }
     try VNImageRequestHandler(cgImage: enlarged, options: [:]).perform([request])
     guard let results = request.results else { throw StockHistoryError.invalid("库存行识别未返回结果") }
-    #if DEBUG
     if let label = diagnosticContext {
       let readings = results.map { observation in
         let candidates = observation.topCandidates(5).map { "\($0.string):\($0.confidence)" }.joined(separator: "|")
@@ -1624,9 +1699,8 @@ enum StockHistoryProcessor {
         let dy = abs(observation.topRight.y - observation.topLeft.y) * Double(enlarged.height)
         return "box=\(observation.boundingBox) rejectedSlope=\(dy > dx * 0.25) candidates=[\(candidates)]"
       }.joined(separator: "; ")
-      print("[StockOCR] \(label) crop=\(crop) scale=\(scale) mode=\(recognitionLevel.rawValue) observations=\(results.count) \(readings)")
+      StockDiagnostics.log("\(label) crop=\(crop) scale=\(scale) mode=\(recognitionLevel.rawValue) observations=\(results.count) \(readings)")
     }
-    #endif
     return try results.flatMap { observation -> [StockOCRCell] in
       let dx = observation.topRight.x - observation.topLeft.x
       let dy = observation.topRight.y - observation.topLeft.y
@@ -1720,7 +1794,7 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
   }
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     // 分享必须在主线程呈现，不能落到下面的处理队列里。
-    if call.method == "shareBytes" || call.method == "shareImage" {
+    if call.method == "shareBytes" || call.method == "shareImage" || call.method == "shareDiagnostics" {
       precondition(Thread.isMainThread)
       guard !sharing else {
         result(FlutterError(code: "INVALID_SHARE", message: "已有分享面板正在显示", details: nil)); return
@@ -1728,7 +1802,11 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
       sharing = true
       do {
         // 面板关闭才解除占用，期间再次分享会被上面的守卫挡下。
-        try Self.presentShare(call) { [weak self] in self?.sharing = false }
+        if call.method == "shareDiagnostics" {
+          try StockDiagnostics.share { [weak self] in self?.sharing = false }
+        } else {
+          try Self.presentShare(call) { [weak self] in self?.sharing = false }
+        }
       } catch {
         sharing = false
         Self.fail(error, result: result)
@@ -1801,7 +1879,10 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
               throw StockHistoryError.invalid("历史长图无法读取")
             }
             let rows: [StockTextLine]
-            if original.needsRecognition { rows = try StockHistoryProcessor.recognize(image) }
+            if original.needsRecognition {
+              StockDiagnostics.begin("历史重新识别 \(id)")
+              rows = try StockHistoryProcessor.recognize(image)
+            }
             else { rows = original.lines }
             let title: String
             if original.needsAutomaticTitle { title = try StockHistoryProcessor.documentTitle(image) }
