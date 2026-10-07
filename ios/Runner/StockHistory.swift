@@ -36,6 +36,14 @@ enum StockOCRRefinement {
   static func compact(_ text: String) -> String {
     text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
   }
+  /// 以整行规格判断包装尾部，正常的「/」与「箱」换行不属于缺字。
+  static func incompletePackaging(_ text: String) -> Bool {
+    let name = compact(text).replacingOccurrences(of:
+      "[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}$", with: "", options: .regularExpression)
+    return name.hasSuffix("/") || name.range(of:
+      "[0-9](?:\\.[0-9]+)?(?:kg|KG|g|ml|mL|L|升|克)[*×xX][0-9]+(?:袋|盒|瓶|包|桶|罐)$",
+      options: .regularExpression) != nil
+  }
   /// 页脚分节标题可能被误读成「其他信鼻沙」等错字；用前缀加长度兜底判断，
   /// 避免页脚文本混入名称流或货物行解析。
   static func isFooterLabel(_ text: String) -> Bool {
@@ -299,7 +307,10 @@ enum StockTableParser {
       }
       current.append(cell)
       if compact(cell.text).range(of: code, options: .regularExpression) != nil {
-        names.append(current)
+        // 货号左缘是正文锚点；完全位于左侧小图区的文字不属于商品名称。
+        // 只排除几何位置明确的杂字，保留正常缩进、换行和带规格的货号文字块。
+        let nameLeft = cell.box.minX - cell.box.height * 0.25
+        names.append(current.filter { $0.box.maxX >= nameLeft })
         current = []
       }
     }
@@ -316,10 +327,15 @@ enum StockTableParser {
       let name = parts.map(\.text).joined(separator: "\n")
       let missingSpecification = name.range(of: "饮料|饮品|咖啡豆|调味酱|蛋糕|面包", options: .regularExpression) != nil &&
         name.range(of: "[0-9](?:\\.[0-9]+)?\\s*(?:kg|KG|g|ml|mL|L|升|克)", options: .regularExpression) == nil
-      if missingSpecification || parts.contains(where: { $0.confidence < 0.8 ||
-        $0.text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("/") ||
-        StockOCRRefinement.compact($0.text).range(of: "^[\\p{Han}]$", options: .regularExpression) != nil
-      }), let retry = retryName, let recovered = try retry(start, end, parts.map { $0.box.minX }.min()!) {
+      let strayCharacter = parts.enumerated().contains { index, part in
+        let text = StockOCRRefinement.compact(part.text)
+        guard text.range(of: "^[\\p{Han}]$", options: .regularExpression) != nil else { return false }
+        return index == 0 || !StockOCRRefinement.compact(parts[index - 1].text).hasSuffix("/") ||
+          !["袋", "盒", "瓶", "包", "桶", "罐", "卷", "捆", "支", "个", "根", "片", "条", "把", "张", "组", "提", "箱"].contains(text)
+      }
+      if missingSpecification || StockOCRRefinement.incompletePackaging(name) ||
+        strayCharacter || parts.contains(where: { $0.confidence < 0.8 }),
+        let retry = retryName, let recovered = try retry(start, end, parts.map { $0.box.minX }.min()!) {
         let expression = try NSRegularExpression(pattern: code)
         func codes(_ text: String) -> [String] {
           expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).map {
@@ -886,7 +902,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 12
+  static let recognitionRevision = 13
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1393,9 +1409,13 @@ enum StockHistoryProcessor {
           }
         }
         // 单字符数量常被整行中文识别忽略。依据已识别单位的位置单独裁出数字输入框。
-        let units = prepared.filter { cell in
+        var units = prepared.filter { cell in
           cell.box.minX >= x && cell.box.midY >= start && cell.box.midY < end &&
             StockOCRRefinement.compact(cell.text).range(of: "^(?:个|毫升|克)$", options: .regularExpression) != nil
+        }
+        if units.isEmpty, let unit = try recoverPreparedUnit(cg, clean: recognitionImage,
+          cells: prepared, start: start, end: end, quantityLeft: x) {
+          units = [unit]
         }
         StockDiagnostics.log("预制单位定位 crop=\(crop) units=\(units.map { "\($0.text)@\($0.box)" })")
         if units.count == 1 {
@@ -1407,6 +1427,12 @@ enum StockHistoryProcessor {
             throw StockHistoryError.invalid("预制物料数量输入框位置无效")
           }
           let numberCrop = CGRect(x: x, y: numberTop, width: numberRight - x, height: numberBottom - numberTop)
+          // 先尝试较深笔画边界，排除输入框左侧较浅的斜向水印；只有原图与增强图
+          // 对同一真实像素区域读数一致才采用，不对混合字符串做数字替换。
+          if let number = try compactPreparedQuantity(cg, numberCrop: numberCrop, unit: unit,
+            inkThreshold: 210) {
+            return [number, unit]
+          }
           for scale in [2, 4] {
             let raw = try inventoryRow(cg, crop: numberCrop, scale: scale,
               requiredPattern: "^[0-9]+(?:\\.[0-9]+)?$", diagnosticContext: "预制数量原图")
@@ -1586,14 +1612,56 @@ enum StockHistoryProcessor {
     return output
   }
 
+  /// 当前行单位被水印吞并时，借相邻行的列位置重新读本行单位，绝不借用相邻行的单位值。
+  static func recoverPreparedUnit(_ original: CGImage, clean: CGImage, cells: [StockOCRCell],
+    start: CGFloat, end: CGFloat, quantityLeft: CGFloat) throws -> StockOCRCell? {
+    guard original.width == clean.width, original.height == clean.height,
+      start >= 0, end > start, quantityLeft >= 0, quantityLeft < CGFloat(original.width) else {
+      throw StockHistoryError.invalid("预制单位复核区域无效")
+    }
+    let anchors = cells.filter {
+      $0.box.minX >= quantityLeft && ["个", "毫升", "克"].contains(StockOCRRefinement.compact($0.text))
+    }.sorted { $0.box.minX < $1.box.minX }
+    guard anchors.count >= 2 else { return nil }
+    let anchor = anchors[anchors.count / 2]
+    guard anchors.filter({ abs($0.box.minX - anchor.box.minX) <= anchor.box.height }).count >= 2 else {
+      return nil
+    }
+    let x = max(quantityLeft, floor(anchor.box.minX - anchor.box.height * 0.3))
+    let y = floor(start)
+    let crop = CGRect(x: x, y: y, width: CGFloat(original.width) - x,
+      height: min(CGFloat(original.height), ceil(end)) - y)
+    for scale in [2, 4] {
+      let raw = try inventoryRow(original, crop: crop, scale: scale,
+        diagnosticContext: "预制单位原图").filter {
+          ["个", "毫升", "克"].contains(StockOCRRefinement.compact($0.text))
+        }
+      let enhanced = try inventoryRow(clean, crop: crop, scale: scale,
+        diagnosticContext: "预制单位去水印").filter {
+          ["个", "毫升", "克"].contains(StockOCRRefinement.compact($0.text))
+        }
+      if raw.count == 1, enhanced.count == 1,
+        StockOCRRefinement.compact(raw[0].text) == StockOCRRefinement.compact(enhanced[0].text),
+        raw[0].box.intersects(enhanced[0].box),
+        abs(raw[0].box.minX - anchor.box.minX) <= anchor.box.height,
+        raw[0].box.midY >= start, raw[0].box.midY < end,
+        min(raw[0].confidence, enhanced[0].confidence) >= 0.8 {
+        return StockOCRCell(text: raw[0].text,
+          confidence: min(raw[0].confidence, enhanced[0].confidence), box: raw[0].box)
+      }
+    }
+    return nil
+  }
+
   /// 将同一行的真实数字像素和真实单位像素靠拢，给单字检测提供连续文本。
   /// 不添加数字、不重复数字；返回坐标仍属于原图，而非重排后的识别画布。
   static func compactPreparedQuantity(_ source: CGImage, numberCrop: CGRect,
-    unit: StockOCRCell) throws -> StockOCRCell? {
+    unit: StockOCRCell, inkThreshold: UInt8 = 225) throws -> StockOCRCell? {
     let unitText = StockOCRRefinement.compact(unit.text)
     let imageBounds = CGRect(x: 0, y: 0, width: source.width, height: source.height)
     guard ["个", "毫升", "克"].contains(unitText), unit.box.height > 0,
-      imageBounds.contains(numberCrop), numberCrop.width > 0, numberCrop.height > 0 else {
+      imageBounds.contains(numberCrop), numberCrop.width > 0, numberCrop.height > 0,
+      (180...225).contains(Int(inkThreshold)) else {
       throw StockHistoryError.invalid("预制数量紧凑识别区域无效")
     }
     // 按单位基线收窄垂直范围，避免把上下分隔线当作数字笔画。
@@ -1614,7 +1682,7 @@ enum StockHistoryProcessor {
     }
     var left = tile.width, right = -1, top = tile.height, bottom = -1, ink = 0
     for y in 0..<tile.height {
-      for x in 0..<tile.width where pixels[y * tile.width + x] < 225 {
+      for x in 0..<tile.width where pixels[y * tile.width + x] < inkThreshold {
         left = min(left, x); right = max(right, x)
         top = min(top, y); bottom = max(bottom, y)
         ink += 1
@@ -1654,7 +1722,7 @@ enum StockHistoryProcessor {
     let faint = try textImage(compact, preserveFaintText: true)
     let contrast = try textImage(compact, isolatedNumber: true)
     let compactBounds = CGRect(x: 0, y: 0, width: width, height: height)
-    StockDiagnostics.log("预制紧凑画布 number=\(numberBox) unit=\(unitBox) ink=\(ink) size=\(width)x\(height)")
+    StockDiagnostics.log("预制紧凑画布 number=\(numberBox) unit=\(unitBox) ink=\(ink) threshold=\(inkThreshold) size=\(width)x\(height)")
     for scale in [2, 4] {
       var readings: [(String, Double)] = []
       for (label, image) in [("原图", compact), ("浅灰增强", faint), ("局部增强", contrast)] {

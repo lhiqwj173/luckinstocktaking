@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:excel/excel.dart';
@@ -253,6 +254,93 @@ void main() {
       StockLine(cells: ['冷水壶\nGS00712-01', 'O个'], confidence: .9).reviewIssue,
       '库存数字待确认',
     );
+  });
+
+  test('周盘规格正常换行不误报，真实漏字仍提示核对', () {
+    for (final name in [
+      '食品保鲜膜SM 500米*6卷/\n箱\nGS00197-04',
+      '瑞幸埃塞铂金咖啡豆1kg*9包/\n箱（拆零）\nGS09888-03',
+      '灭蝇纸28*10.5cmSM10张/\n盒\nGS00660-03',
+      '单杯手提袋2023 NW 400个/\n箱\nGS03598-12',
+      '鑫国扁扁黄油可颂15g*40个\n*6盒\nGS06813-01',
+    ]) {
+      expect(
+        StockLine(cells: [name, '0个'], confidence: .95).reviewIssue,
+        isNull,
+        reason: name,
+      );
+    }
+    expect(
+      StockLine(
+        cells: ['新塞尚丝绒风味厚奶1L*12盒/\nGS04465-08', '0盒'],
+        confidence: .95,
+      ).reviewIssue,
+      '名称或规格可能不完整，请对照原图',
+    );
+    expect(
+      StockLine(
+        cells: ['新雀巢丝绒风味厚奶1L*12盒\nGS04465-10', '0盒'],
+        confidence: .95,
+      ).reviewIssue,
+      '包装规格可能漏识别，请对照原图',
+    );
+    expect(
+      StockLine(
+        cells: ['新雀巢丝绒风味厚奶1L*12盒 GS04465-10', '0盒'],
+        confidence: .95,
+      ).reviewIssue,
+      '包装规格可能漏识别，请对照原图',
+      reason: '品名与货号被同一文字块识别时也应检查包装尾部',
+    );
+    expect(
+      StockLine(
+        cells: ['热饮杯ZC 300个/箱\n翻\nGS00412-218', '0个'],
+        confidence: .95,
+      ).reviewIssue,
+      '名称或规格可能不完整，请对照原图',
+    );
+  });
+
+  test('周盘预制物料水印读数保持待确认，修复数量后保留零值与单位', () {
+    for (final quantity in ['2A12个', '7TX']) {
+      final line = StockLine(
+        cells: ['青金桔-预制作', quantity],
+        confidence: .95,
+        inventoryUncertain: true,
+        category: 'prepared',
+      );
+      expect(line.reviewIssue, '库存数字待确认');
+      expect(line.inventory.uncertain, isTrue);
+    }
+    for (final quantity in ['12个', '7个', '3000毫升', '0克']) {
+      final line = StockLine(
+        cells: ['青金桔-预制作', quantity],
+        confidence: .95,
+        category: 'prepared',
+      );
+      expect(line.reviewIssue, isNull);
+      expect(line.inventory.uncertain, isFalse);
+    }
+  });
+
+  test('真实周盘中23条正常换行规格不再误报', () {
+    final rows = (jsonDecode(
+      File('ios/RunnerTests/Fixtures/inventory_weekly_20260925_expected.json')
+          .readAsStringSync(encoding: utf8),
+    ) as List).cast<Map<String, dynamic>>();
+    final falseAlarms = rows.where(
+      (row) =>
+          row['originalReviewStatus'] == '名称或规格可能不完整，请对照原图' &&
+          !['GS04465-08', 'GS00412-218'].contains(row['code']),
+    );
+    expect(falseAlarms.length, 23);
+    for (final row in falseAlarms) {
+      final line = StockLine(
+        cells: [row['name'] as String, row['quantity'] as String],
+        confidence: .95,
+      );
+      expect(line.reviewIssue, isNull, reason: row['code'] as String);
+    }
   });
 
   test('往返保留重复行、原始数量、置信度及导入时间', () {
@@ -517,10 +605,7 @@ void main() {
     });
     await tester.pumpWidget(const MaterialApp(home: StockHistoryPage()));
     await tester.pumpAndSettle();
-    expect(
-      find.text('预制物料名称缺少制作/处理尾字，不能与下一行合并，请核对原图'),
-      findsOneWidget,
-    );
+    expect(find.text('预制物料名称缺少制作/处理尾字，不能与下一行合并，请核对原图'), findsOneWidget);
     await tester.tap(find.text('导出诊断日志'));
     await tester.pumpAndSettle();
     expect(calls, ['list', 'shareDiagnostics']);
@@ -596,7 +681,9 @@ void main() {
     });
     await tester.pumpWidget(
       MaterialApp(
-        home: StockDocumentPage(document: StockDocument.fromJson(tableRecord())),
+        home: StockDocumentPage(
+          document: StockDocument.fromJson(tableRecord()),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -650,7 +737,9 @@ void main() {
     });
     await tester.pumpWidget(
       MaterialApp(
-        home: StockDocumentPage(document: StockDocument.fromJson(tableRecord())),
+        home: StockDocumentPage(
+          document: StockDocument.fromJson(tableRecord()),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -678,7 +767,9 @@ void main() {
       throw StateError('意外的平台请求：${call.method}');
     });
     await tester.pumpWidget(
-      MaterialApp(home: StockDocumentPage(document: StockDocument.fromJson(record()))),
+      MaterialApp(
+        home: StockDocumentPage(document: StockDocument.fromJson(record())),
+      ),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('导出与分享'));
@@ -688,7 +779,9 @@ void main() {
         .widgetList<PopupMenuItem<Object?>>(
           find.ancestor(
             of: find.text(label),
-            matching: find.byWidgetPredicate((widget) => widget is PopupMenuItem),
+            matching: find.byWidgetPredicate(
+              (widget) => widget is PopupMenuItem,
+            ),
           ),
         )
         .single;

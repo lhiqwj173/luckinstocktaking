@@ -28,13 +28,33 @@ class StockLine {
     if (RegExp(r'(?:^|\n)\s*[01]20\d{4}[A-Z]+\d').hasMatch(name)) {
       return '活动规格首字母可能被识别成数字，请对照原图';
     }
-    if (name
-            .split('\n')
-            .any(
-              (part) => RegExp(r'^[\u4e00-\u9fff]$').hasMatch(part.trim()),
-            ) ||
-        name.split('\n').any((part) => part.trim().endsWith('/'))) {
+    final nameParts = name
+        .split('\n')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList();
+    final productName = nameParts
+        .join()
+        .replaceAll(RegExp(r'\s+'), '')
+        .replaceFirst(
+          RegExp(r'[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}$'),
+          '',
+        );
+    // 「/」和包装单位可以正常换行；必须检查拼合后的规格，不能逐行报错。
+    final straySingleCharacter = nameParts.asMap().entries.any((entry) {
+      final part = entry.value;
+      if (!RegExp(r'^[\u4e00-\u9fff]$').hasMatch(part)) return false;
+      return entry.key == 0 ||
+          !nameParts[entry.key - 1].endsWith('/') ||
+          !RegExp(r'^[袋盒瓶包桶罐卷捆支个根片条把张组提箱]$').hasMatch(part);
+    });
+    if (straySingleCharacter || productName.endsWith('/')) {
       return '名称或规格可能不完整，请对照原图';
+    }
+    if (!isPrepared &&
+        RegExp(r'\d(?:\.\d+)?(?:kg|KG|g|ml|mL|L|升|克)[*×xX]\d+(?:袋|盒|瓶|包|桶|罐)$')
+            .hasMatch(productName)) {
+      return '包装规格可能漏识别，请对照原图';
     }
     if (!isPrepared &&
         RegExp(r'饮料|饮品|咖啡豆|调味酱|蛋糕|面包').hasMatch(name) &&

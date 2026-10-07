@@ -186,6 +186,107 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(try StockTableParser.rows(cells, retryName: { _, _, _ in other })[0].cells[0].contains("另一款"))
   }
 
+  func testRealWeeklyInventoryPreservesEveryGoodsQuantityAndRecoversPreparedRows() throws {
+    struct ExpectedGoods: Decodable {
+      let code: String
+      let quantity: String
+    }
+    let bundle = Bundle(for: Self.self)
+    let url = try XCTUnwrap(bundle.url(forResource: "inventory_weekly_20260925",
+      withExtension: "jpg", subdirectory: "Fixtures"))
+    let expectedURL = try XCTUnwrap(bundle.url(forResource: "inventory_weekly_20260925_expected",
+      withExtension: "json", subdirectory: "Fixtures"))
+    let expected = try JSONDecoder().decode([ExpectedGoods].self, from: Data(contentsOf: expectedURL))
+    let rows = try StockHistoryProcessor.recognize(XCTUnwrap(UIImage(contentsOfFile: url.path)))
+    let goods = rows.filter { $0.category != "prepared" }
+    XCTAssertEqual(goods.count, 179)
+    XCTAssertEqual(goods.count, expected.count)
+    // 按原单顺序逐项核验，缺行、重复、错序及库存跨行都必须失败。
+    for (actual, expectedRow) in zip(goods, expected) {
+      XCTAssertTrue(StockOCRRefinement.compact(actual.cells[0]).hasSuffix(expectedRow.code))
+      XCTAssertEqual(StockOCRRefinement.compact(actual.cells[1]),
+        StockOCRRefinement.compact(expectedRow.quantity), expectedRow.code)
+    }
+    let prepared = rows.filter { $0.category == "prepared" }
+    XCTAssertEqual(prepared.count, 5)
+    for (name, quantity) in [("青金桔", "12个"), ("鲜橙", "5个"), ("香水柠檬", "7个"),
+      ("冷萃咖啡液", "3000毫升"), ("巧克力", "0克")] {
+      let row = try XCTUnwrap(prepared.first { $0.cells[0].contains(name) })
+      XCTAssertEqual(StockOCRRefinement.compact(row.cells[1]), quantity, name)
+      XCTAssertFalse(row.inventoryUncertain ?? true, name)
+    }
+    for code in ["GS04465-08", "GS04465-10"] {
+      let row = try XCTUnwrap(goods.first { $0.cells[0].contains(code) })
+      XCTAssertTrue(StockOCRRefinement.compact(row.cells[0]).contains("1L*12盒/箱"), code)
+    }
+    XCTAssertFalse(try XCTUnwrap(goods.first { $0.cells[0].contains("GS00412-218") }).cells[0].contains("翻"))
+    XCTAssertFalse(try XCTUnwrap(goods.first { $0.cells[0].contains("GS00440-540") }).cells[0].contains("幽國"))
+  }
+
+  func testPreparedUnitRecoveryReadsCurrentRowAndDeepInkExcludesWatermark() throws {
+    let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "inventory_weekly_20260925_prepared",
+      withExtension: "png", subdirectory: "Fixtures"))
+    let image = try XCTUnwrap(UIImage(contentsOfFile: url.path)?.cgImage)
+    let clean = try StockHistoryProcessor.textImage(image)
+    func unit(_ text: String, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: 563, y: y, width: 30, height: 28))
+    }
+    let anchors = [unit("个", 971), unit("个", 1054), unit("毫升", 1237), unit("克", 1318)]
+    let lemonUnit = try XCTUnwrap(StockHistoryProcessor.recoverPreparedUnit(image, clean: clean,
+      cells: anchors, start: 1115, end: 1200, quantityLeft: 440))
+    XCTAssertEqual(StockOCRRefinement.compact(lemonUnit.text), "个")
+    XCTAssertGreaterThanOrEqual(lemonUnit.box.midY, 1115)
+    XCTAssertLessThan(lemonUnit.box.midY, 1200)
+    XCTAssertNil(try StockHistoryProcessor.recoverPreparedUnit(image, clean: clean,
+      cells: [anchors[0]], start: 1115, end: 1200, quantityLeft: 440),
+      "只有一个列锚点时不能借用邻行单位")
+    let quantity = try XCTUnwrap(StockHistoryProcessor.compactPreparedQuantity(image,
+      numberCrop: CGRect(x: 440, y: 957, width: 115, height: 50), unit: anchors[0], inkThreshold: 210))
+    XCTAssertEqual(StockOCRRefinement.compact(quantity.text), "12")
+    XCTAssertGreaterThan(quantity.box.minX, 480, "水印字符不能参与数字像素边界")
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let faintWatermark = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 50), format: format).image {
+      context in
+      UIColor(white: 245.0 / 255, alpha: 1).setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 160, height: 50))
+      UIColor(white: 214.0 / 255, alpha: 1).setFill()
+      context.fill(CGRect(x: 20, y: 10, width: 30, height: 25))
+    }
+    let blankUnit = StockOCRCell(text: "个", confidence: 0.95,
+      box: CGRect(x: 120, y: 10, width: 25, height: 25))
+    XCTAssertNil(try StockHistoryProcessor.compactPreparedQuantity(XCTUnwrap(faintWatermark.cgImage),
+      numberCrop: CGRect(x: 0, y: 0, width: 110, height: 50), unit: blankUnit, inkThreshold: 210),
+      "仅有浅色水印的空框不能生成数量")
+  }
+
+  func testGoodsNamesExcludeThumbnailTextAndRecoverTruncatedPackaging() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double, _ width: Double = 100) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: width, height: 20))
+    }
+    let cells = [cell("货物规格名称", 20, 0), cell("实盘总库存", 440, 0),
+      cell("新雀巢丝绒风味厚奶1L*12盒", 80, 50), cell("GS04465-10", 80, 100), cell("0盒", 500, 75),
+      cell("9月上旬202609-16oz热饮杯", 80, 150), cell("ZC 300个/箱", 80, 175),
+      cell("翻", 20, 180, 20), cell("GS00412-218", 80, 200), cell("-袋0个", 500, 175),
+      cell("9月中旬活动杯套202609 JH", 80, 250), cell("200个*10把/箱", 80, 275),
+      cell("幽國", 20, 280, 40), cell("GS00440-540", 80, 300), cell("-把0个", 500, 275)]
+    let recovered = [cell("新雀巢丝绒风味厚奶1L*12盒/箱", 80, 50), cell("GS04465-10", 80, 100)]
+    var retries = 0
+    let rows = try StockTableParser.rows(cells, retryName: { _, _, left in
+      XCTAssertEqual(left, 80)
+      retries += 1
+      return recovered
+    })
+    XCTAssertEqual(retries, 1)
+    XCTAssertTrue(rows[0].cells[0].contains("12盒/箱"))
+    XCTAssertFalse(rows[1].cells[0].contains("翻"))
+    XCTAssertFalse(rows[2].cells[0].contains("幽國"))
+    XCTAssertEqual(rows.map { $0.cells[1] }, ["0盒", "-袋0个", "-把0个"])
+    XCTAssertFalse(StockOCRRefinement.incompletePackaging("食品保鲜膜500米*6卷/\n箱\nGS00197-04"))
+    XCTAssertTrue(StockOCRRefinement.incompletePackaging("新雀巢丝绒风味厚奶1L*12盒\nGS04465-10"))
+    XCTAssertFalse(StockOCRRefinement.incompletePackaging("鑫国扁扁黄油可颂15g*40个\n*6盒\nGS06813-01"))
+  }
+
   func testOverlappingOCRBlocksDoNotCreateAnExtraProductCodeRow() throws {
     func cell(_ text: String, _ x: Double, _ y: Double, _ width: Double, _ height: Double) -> StockOCRCell {
       StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: width, height: height))
