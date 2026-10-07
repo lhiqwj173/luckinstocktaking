@@ -117,19 +117,46 @@ enum StockOCRRefinement {
 }
 
 enum StockTableParser {
+  /// 固定标题可出现这些形近字；只接受完整标题和最多两处替换，不用于业务数据。
+  static func canonicalHeader(_ text: String) -> String? {
+    let value = StockOCRRefinement.compact(text)
+    guard value.count == 5 || value.count == 6 else { return nil }
+    let confusions: [Character: Character] = ["恪": "格", "厍": "库", "苻": "存", "买": "实"]
+    var changes = 0
+    let canonical = String(value.map { character -> Character in
+      guard let replacement = confusions[character] else { return character }
+      changes += 1
+      return replacement
+    })
+    guard changes <= 2,
+      ["货物规格名称", "实盘总库存", "预制物料名称"].contains(canonical) else { return nil }
+    return canonical
+  }
+
   static func headerRanges(_ text: String) -> [Range<String.Index>] {
     precondition(!text.isEmpty, "表头识别文字不能为空")
     if let name = text.range(of:
-      "(?:货\\s*物\\s*规\\s*格\\s*名\\s*称|预\\s*制\\s*物\\s*料\\s*名\\s*称)",
+      "(?:货\\s*物\\s*规\\s*[格恪]\\s*名\\s*称|预\\s*制\\s*物\\s*料\\s*名\\s*称)",
       options: .regularExpression),
-      let stock = text.range(of: "实\\s*盘\\s*总\\s*库\\s*存", options: .regularExpression) {
+      let stock = text.range(of: "[实买]\\s*盘\\s*总\\s*[库厍]\\s*[存苻]", options: .regularExpression),
+      canonicalHeader(String(text[name])) != nil, canonicalHeader(String(text[stock])) != nil {
       return [name, stock]
     }
     return [text.startIndex..<text.endIndex]
   }
 
   /// 库存标题也出现在预制表中；只有同一行左右配对的货物表头才能定位货物库存列。
-  static func goodsHeaders(_ cells: [StockOCRCell]) -> (name: StockOCRCell, stock: StockOCRCell)? {
+  static func goodsHeaders(_ input: [StockOCRCell], allowHeaderConfusions: Bool = false)
+    -> (name: StockOCRCell, stock: StockOCRCell)? {
+    let cells: [StockOCRCell]
+    if allowHeaderConfusions {
+      cells = input.compactMap { cell in
+        guard let text = canonicalHeader(cell.text) else { return nil }
+        return StockOCRCell(text: text, confidence: cell.confidence, box: cell.box)
+      }
+    } else {
+      cells = input
+    }
     let names = cells.filter { StockOCRRefinement.compact($0.text).contains("货物规格名称") }
       .sorted { $0.box.minY < $1.box.minY }
     for name in names {
@@ -142,6 +169,21 @@ enum StockTableParser {
       }
     }
     return nil
+  }
+
+  /// 形近字纠正必须有两份真实读数与重叠位置支持，不能凭标题词表补出缺失表头。
+  static func verifiedGoodsHeaders(raw: [StockOCRCell], clean: [StockOCRCell])
+    -> (name: StockOCRCell, stock: StockOCRCell)? {
+    guard let rawHeaders = goodsHeaders(raw, allowHeaderConfusions: true),
+      let cleanHeaders = goodsHeaders(clean, allowHeaderConfusions: true),
+      rawHeaders.name.text == cleanHeaders.name.text, rawHeaders.stock.text == cleanHeaders.stock.text,
+      StockOCRRefinement.match(rawHeaders.name, in: [cleanHeaders.name]) != nil,
+      StockOCRRefinement.match(rawHeaders.stock, in: [cleanHeaders.stock]) != nil else { return nil }
+    return (
+      StockOCRCell(text: rawHeaders.name.text,
+        confidence: min(rawHeaders.name.confidence, cleanHeaders.name.confidence), box: rawHeaders.name.box),
+      StockOCRCell(text: rawHeaders.stock.text,
+        confidence: min(rawHeaders.stock.confidence, cleanHeaders.stock.confidence), box: rawHeaders.stock.box))
   }
 
   static func preparedHeaders(_ cells: [StockOCRCell]) -> (name: StockOCRCell, stock: StockOCRCell)? {
@@ -928,7 +970,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 14
+  static let recognitionRevision = 15
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1256,17 +1298,9 @@ enum StockHistoryProcessor {
       for scale in [2, 4] {
         let raw = try inventoryRow(original, crop: crop, scale: scale, diagnosticContext: "货物表头原图")
         let enhanced = try inventoryRow(clean, crop: crop, scale: scale, diagnosticContext: "货物表头去水印")
-        guard let rawHeaders = StockTableParser.goodsHeaders(raw),
-          let cleanHeaders = StockTableParser.goodsHeaders(enhanced),
-          StockOCRRefinement.compact(rawHeaders.name.text) == StockOCRRefinement.compact(cleanHeaders.name.text),
-          StockOCRRefinement.compact(rawHeaders.stock.text) == StockOCRRefinement.compact(cleanHeaders.stock.text),
-          StockOCRRefinement.match(rawHeaders.name, in: [cleanHeaders.name]) != nil,
-          StockOCRRefinement.match(rawHeaders.stock, in: [cleanHeaders.stock]) != nil else { continue }
-        return (
-          StockOCRCell(text: rawHeaders.name.text,
-            confidence: min(rawHeaders.name.confidence, cleanHeaders.name.confidence), box: rawHeaders.name.box),
-          StockOCRCell(text: rawHeaders.stock.text,
-            confidence: min(rawHeaders.stock.confidence, cleanHeaders.stock.confidence), box: rawHeaders.stock.box))
+        guard let headers = StockTableParser.verifiedGoodsHeaders(raw: raw, clean: enhanced) else { continue }
+        StockDiagnostics.log("货物表头复核通过 scale=\(scale) name=\(headers.name.text)@\(headers.name.box) stock=\(headers.stock.text)@\(headers.stock.box) confidence=\(headers.stock.confidence)")
+        return headers
       }
     }
     return nil

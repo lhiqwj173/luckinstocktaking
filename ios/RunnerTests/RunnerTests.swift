@@ -35,6 +35,51 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(StockTableParser.headerRanges(product).map { String(product[$0]) }, [product])
   }
 
+  func testHeaderConfusionsFromWeeklyFailureLogRequireCompleteFixedTitles() {
+    for (reading, expected) in [("货物规恪名称", "货物规格名称"),
+      ("实盘总厍存", "实盘总库存"), ("实盘总厍苻", "实盘总库存"),
+      ("买盘总厍存", "实盘总库存"), ("实 盘 总 厍 存", "实盘总库存")] {
+      XCTAssertEqual(StockTableParser.canonicalHeader(reading), expected, reading)
+    }
+    for reading in ["实盘库存", "买盘总厍苻", "货物规格描述", "实盘总厍存饮料",
+      "厍存", "2A12个", "7TX", "12个", "", "预制物料信息"] {
+      XCTAssertNil(StockTableParser.canonicalHeader(reading), reading)
+    }
+    let combined = "货物规恪名称  实盘总厍苻"
+    XCTAssertEqual(StockTableParser.headerRanges(combined).map { String(combined[$0]) },
+      ["货物规恪名称", "实盘总厍苻"], "拆分只恢复真实文字范围，不改写 OCR 原文")
+  }
+
+  func testWeeklyFailureLogHeadersRecoverWithTwoAlignedReadingsWithoutRaisingConfidence() throws {
+    // 320 像素周盘图、2 倍表头复读的失败日志；原图与增强图均出现形近字。
+    let rawName = StockOCRCell(text: "货物规格名称", confidence: 1,
+      box: CGRect(x: 14.87, y: 198.26, width: 66.25, height: 13.47))
+    let rawStock = StockOCRCell(text: "实盘总厍存", confidence: 0.3,
+      box: CGRect(x: 168.93, y: 198.65, width: 56.15, height: 12.71))
+    let cleanName = StockOCRCell(text: "货物规恪名称", confidence: 0.3,
+      box: CGRect(x: 15, y: 198, width: 66, height: 12))
+    let cleanStock = StockOCRCell(text: "实盘总厍苻", confidence: 0.3,
+      box: CGRect(x: 168.99, y: 197.94, width: 56, height: 13))
+    let raw = [rawName, rawStock]
+    let clean = [cleanName, cleanStock]
+    XCTAssertNil(StockTableParser.goodsHeaders(raw), "一般解析不允许单次读数纠错")
+    let verified = try XCTUnwrap(StockTableParser.verifiedGoodsHeaders(raw: raw, clean: clean))
+    XCTAssertEqual(verified.name.text, "货物规格名称")
+    XCTAssertEqual(verified.stock.text, "实盘总库存")
+    XCTAssertEqual(verified.name.confidence, 0.3)
+    XCTAssertEqual(verified.stock.confidence, 0.3)
+    XCTAssertEqual(verified.name.box, rawName.box)
+    XCTAssertEqual(verified.stock.box, rawStock.box)
+    XCTAssertNil(StockTableParser.verifiedGoodsHeaders(raw: raw, clean: [cleanName]))
+    XCTAssertNil(StockTableParser.verifiedGoodsHeaders(raw: [rawName], clean: clean))
+    let shifted = StockOCRCell(text: cleanStock.text, confidence: 1,
+      box: CGRect(x: 250, y: 198, width: 56, height: 13))
+    XCTAssertNil(StockTableParser.verifiedGoodsHeaders(raw: raw, clean: [cleanName, shifted]))
+    let differentRow = StockOCRCell(text: cleanStock.text, confidence: 1,
+      box: CGRect(x: 169, y: 900, width: 56, height: 13))
+    XCTAssertNil(StockTableParser.verifiedGoodsHeaders(raw: raw, clean: [cleanName, differentRow]))
+  }
+
   func testGoodsHeadersRejectPreparedHeaderAndDifferentRows() throws {
     func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
       StockOCRCell(text: text, confidence: 0.95,
