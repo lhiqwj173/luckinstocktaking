@@ -27,11 +27,33 @@ struct StockOCRCell {
 }
 
 enum StockOCRRefinement {
+  /// 仅定位复读区域；G5/G$ 和丢失前缀的读数不能直接转换为真实货号。
+  static func isProductCodeCandidate(_ text: String) -> Bool {
+    compact(text).range(of:
+      "^(?:[Gg][Ss5$][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}|[A-Za-z0-9$]{6,10}[-－—.][0-9OoIl]{2,3}|[0-9OoIl]{8,11})$",
+      options: .regularExpression) != nil
+  }
+
+  /// 仅接受标题及已观察到的「信息」形近字，不把「预制物料包装」之类品名当分节。
+  static func isPreparedSectionLabel(_ text: String) -> Bool {
+    let value = compact(text)
+    return value == "预制物料名称" || (value.hasPrefix("预制物料") &&
+      ["信息", "倌息", "值息", "倡息", "值思", "信思", "信恩"].contains(String(value.dropFirst(4))))
+  }
+
   static func canonicalProductCode(_ text: String) -> String? {
     let value = compact(text).uppercased().replacingOccurrences(of: "－", with: "-")
       .replacingOccurrences(of: "—", with: "-")
     guard value.range(of: "^GS[0-9]{4,8}-[0-9]{2,3}$", options: .regularExpression) != nil else { return nil }
     return value
+  }
+  /// 仅供两次复读比对：GS 是固定前缀，可核对 S/5/$，数字部分必须全部是真实数字。
+  static func productCodeReading(_ text: String) -> String? {
+    if let code = canonicalProductCode(text) { return code }
+    let value = compact(text).uppercased().replacingOccurrences(of: "－", with: "-")
+      .replacingOccurrences(of: "—", with: "-")
+    guard value.range(of: "^G[5$][0-9]{4,8}-[0-9]{2,3}$", options: .regularExpression) != nil else { return nil }
+    return "GS" + String(value.dropFirst(2))
   }
   static func compact(_ text: String) -> String {
     text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
@@ -117,6 +139,33 @@ enum StockOCRRefinement {
 }
 
 enum StockTableParser {
+  static func goodsBottom(_ cells: [StockOCRCell], below top: CGFloat,
+    imageBottom: CGFloat = .greatestFiniteMagnitude) -> CGFloat {
+    precondition(top >= 0 && imageBottom > top, "货物分区上下边界无效")
+    var markers = cells.filter {
+      $0.box.minY > top && (StockOCRRefinement.isFooterLabel($0.text) ||
+        StockOCRRefinement.isPreparedSectionLabel($0.text))
+    }.map { $0.box.minY }
+    // 分节灰字可能出现尚未观察到的错字；只有明确的预制名称表头、左缘对齐、
+    // 紧邻表头且中间没有货号，才可把这个短标签作为货物结束位置。
+    for header in cells where header.box.minY > top &&
+      StockOCRRefinement.compact(header.text) == "预制物料名称" {
+      for label in cells {
+        let text = StockOCRRefinement.compact(label.text)
+        guard text.count == 6, text.hasPrefix("预制物料"), label.box.minY > top,
+          label.box.maxY < header.box.minY,
+          header.box.minY - label.box.maxY <= max(header.box.height, label.box.height) * 6,
+          abs(label.box.minX - header.box.minX) <= header.box.height,
+          !cells.contains(where: {
+            $0.box.midY > label.box.maxY && $0.box.midY < header.box.minY &&
+              StockOCRRefinement.isProductCodeCandidate($0.text)
+          }) else { continue }
+        markers.append(label.box.minY)
+      }
+    }
+    return markers.min() ?? imageBottom
+  }
+
   /// 固定标题可出现这些形近字；只接受完整标题和最多两处替换，不用于业务数据。
   static func canonicalHeader(_ text: String) -> String? {
     let value = StockOCRRefinement.compact(text)
@@ -356,15 +405,14 @@ enum StockTableParser {
     let stockHeader = headers.stock
     let boundary = (nameHeader.box.maxX + stockHeader.box.minX) / 2
     let top = max(nameHeader.box.maxY, stockHeader.box.maxY)
-    let footer = ordered.first(where: { cell in
-      cell.box.minY > top && (StockOCRRefinement.isFooterLabel(cell.text) ||
-        compact(cell.text).contains("预制物料信息"))
-    })?.box.minY ?? .greatestFiniteMagnitude
+    let footer = goodsBottom(ordered, below: top)
     let body = ordered.filter { $0.box.midY > top && $0.box.midY < footer }
     let left = body.filter { $0.box.minX < boundary && !compact($0.text).contains("货物规格名称") }
     // O/I 与数字混淆只用于寻找行锚点，显示和保存时保留识别原文供校对。
     let code = "[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}"
     let codeExpression = try NSRegularExpression(pattern: code)
+    let codeColumns = left.filter { compact($0.text).range(of: code, options: .regularExpression) != nil }
+      .map { $0.box.minX }.sorted()
     var names: [[StockOCRCell]] = []
     var current: [StockOCRCell] = []
     for cell in left {
@@ -372,6 +420,13 @@ enum StockTableParser {
         range: NSRange(location: 0, length: (compact(cell.text) as NSString).length))
       guard anchors.count <= 1 else {
         throw StockHistoryError.invalid("同一文字块包含多个货号，不能合并货物行，请核对原图")
+      }
+      let nearCodeColumn = !codeColumns.isEmpty &&
+        abs(cell.box.minX - codeColumns[codeColumns.count / 2]) <= cell.box.height * 1.5
+      if anchors.isEmpty, StockOCRRefinement.isProductCodeCandidate(cell.text),
+        nearCodeColumn || compact(cell.text).range(of: "^[Gg][5$]", options: .regularExpression) != nil {
+        StockDiagnostics.log("货号复核仍失败 text=\(cell.text) box=\(cell.box)")
+        throw StockHistoryError.invalid("货物编码仍无法确认：\(cell.text)，请核对原始长图")
       }
       current.append(cell)
       if compact(cell.text).range(of: code, options: .regularExpression) != nil {
@@ -382,6 +437,7 @@ enum StockTableParser {
         current = []
       }
     }
+    StockDiagnostics.log("货物行划分 top=\(top) bottom=\(footer) anchors=\(names.count) trailing=\(current.suffix(12).map { "\($0.text)@\($0.box)" })")
     guard !names.isEmpty, current.isEmpty else {
       throw StockHistoryError.invalid("货物编码识别不完整，无法可靠划分货物行，请核对原始长图")
     }
@@ -970,7 +1026,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 15
+  static let recognitionRevision = 16
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1491,8 +1547,7 @@ enum StockHistoryProcessor {
       return readings.max { $0.count < $1.count }!
     }
     if let marker = cells.filter({
-      StockOCRRefinement.compact($0.text).contains("预制物料信息") ||
-        StockOCRRefinement.compact($0.text).contains("预制物料名称")
+      StockOCRRefinement.isPreparedSectionLabel($0.text)
     }).min(by: { $0.box.minY < $1.box.minY }) {
       progress("正在识别预制物料")
       let top = max(0, (marker.box.minY - 12).rounded(.down))
@@ -1622,10 +1677,8 @@ enum StockHistoryProcessor {
       columnX > 0, columnX < original.width else { throw StockHistoryError.invalid("复识别图像尺寸或列位置无效") }
     guard let header = cells.filter({ StockOCRRefinement.compact($0.text).contains("实盘总库存") })
       .min(by: { $0.box.minY < $1.box.minY }) else { throw StockHistoryError.invalid("复识别缺少库存表头") }
-    let footer = cells.filter { cell in
-      cell.box.minY > header.box.maxY && (StockOCRRefinement.isFooterLabel(cell.text) ||
-        StockOCRRefinement.compact(cell.text).contains("预制物料信息"))
-    }.map { $0.box.minY }.min() ?? CGFloat(original.height)
+    let footer = StockTableParser.goodsBottom(cells, below: header.box.maxY,
+      imageBottom: CGFloat(original.height))
     var output = cells
     for start in stride(from: 0, to: original.height, by: 1800) {
       for inventory in [false, true] {
@@ -1659,98 +1712,127 @@ enum StockHistoryProcessor {
     return output
   }
 
-  /// 单独复读货号所在窄列，补回首次 OCR 完全遗漏的行锚点；不依赖已解析出的货物行。
+  /// 在同一像素区域替换错误货号，不留下旧 G5/G$ 文本，也不借用邻行或补造数字。
+  static func mergeVerifiedProductCodes(_ cells: [StockOCRCell], raw: [StockOCRCell],
+    clean: [StockOCRCell]) throws -> [StockOCRCell] {
+    let expression = try NSRegularExpression(pattern: "[Gg][Ss5$][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}")
+    var output = cells
+    for candidate in raw {
+      guard let code = StockOCRRefinement.productCodeReading(candidate.text),
+        let agreement = StockOCRRefinement.match(candidate, in: clean),
+        code == StockOCRRefinement.productCodeReading(agreement.text) else { continue }
+      let existing = output.indices.filter { index in
+        let cell = output[index]
+        let hasCode = StockOCRRefinement.isProductCodeCandidate(cell.text) ||
+          expression.firstMatch(in: cell.text, range: NSRange(cell.text.startIndex..., in: cell.text)) != nil
+        let overlap = cell.box.intersection(candidate.box)
+        return hasCode && !overlap.isNull &&
+          overlap.height >= min(cell.box.height, candidate.box.height) * 0.6
+      }
+      guard existing.count <= 1 else {
+        throw StockHistoryError.invalid("货号复核区域存在多个重叠编码，无法确定对应货物")
+      }
+      guard let index = existing.first else {
+        output.append(StockOCRCell(text: code,
+          confidence: min(candidate.confidence, agreement.confidence), box: candidate.box))
+        continue
+      }
+      let old = output[index]
+      let repaired: String
+      let box: CGRect
+      if StockOCRRefinement.isProductCodeCandidate(old.text) {
+        if StockOCRRefinement.canonicalProductCode(old.text) == code { continue }
+        repaired = code
+        box = candidate.box
+      } else {
+        let matches = expression.matches(in: old.text, range: NSRange(old.text.startIndex..., in: old.text))
+        guard matches.count == 1 else {
+          throw StockHistoryError.invalid("货号复核无法分离名称与编码")
+        }
+        if (old.text as NSString).substring(with: matches[0].range) == code { continue }
+        repaired = (old.text as NSString).replacingCharacters(in: matches[0].range, with: code)
+        box = old.box
+      }
+      StockDiagnostics.log("货号复核恢复 old=\(old.text) new=\(repaired) box=\(box)")
+      output[index] = StockOCRCell(text: repaired,
+        confidence: min(old.confidence, min(candidate.confidence, agreement.confidence)), box: box)
+    }
+    return output
+  }
+
+  /// 先复读货号窄列补全行锚点，再针对未恢复的读数局部放大。
   static func recoverProductCodes(_ cells: [StockOCRCell], original: CGImage, clean: CGImage,
     columnX: Int, progress: (String) -> Void) throws -> [StockOCRCell] {
-    let pattern = "^[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}$"
+    guard original.width == clean.width, original.height == clean.height,
+      columnX > 0, columnX < original.width else {
+      throw StockHistoryError.invalid("货号复核图像尺寸或列位置无效")
+    }
     let anchors = cells.filter {
       $0.box.minX < CGFloat(columnX) &&
-        StockOCRRefinement.compact($0.text).range(of: pattern, options: .regularExpression) != nil
+        StockOCRRefinement.isProductCodeCandidate($0.text)
     }
     guard !anchors.isEmpty else { throw StockHistoryError.invalid("缺少可定位的货号列，请核对原图") }
     guard let top = cells.filter({ StockOCRRefinement.compact($0.text).contains("货物规格名称") })
       .map({ $0.box.maxY }).min() else {
       throw StockHistoryError.invalid("复核货号缺少货物表头")
     }
-    let bottom = cells.filter { cell in
-      cell.box.minY > top && (StockOCRRefinement.isFooterLabel(cell.text) ||
-        StockOCRRefinement.compact(cell.text).contains("预制物料信息"))
-    }.map { $0.box.minY }.min() ?? CGFloat(original.height)
-    let left = max(0, (anchors.map { $0.box.minX }.min()! - 16).rounded(.down))
-    let right = min(CGFloat(columnX), (anchors.map { $0.box.maxX }.max()! + 16).rounded(.up))
+    let bottom = StockTableParser.goodsBottom(cells, below: top, imageBottom: CGFloat(original.height))
+    let bodyAnchors = anchors.filter { $0.box.midY > top && $0.box.midY < bottom }
+    guard !bodyAnchors.isEmpty else { throw StockHistoryError.invalid("货物区没有可定位的货号") }
+    let padding = max(4, bodyAnchors.map { $0.box.height }.sorted()[bodyAnchors.count / 2] * 0.6)
+    let left = max(0, (bodyAnchors.map { $0.box.minX }.min()! - padding).rounded(.down))
+    let right = min(CGFloat(columnX), (bodyAnchors.map { $0.box.maxX }.max()! + padding).rounded(.up))
+    let layout = try ocrLayout(width: original.width)
+    let block = min(1200, layout.block)
+    let margin = max(24, layout.margin)
+    let scale = original.width < 400 ? 4 : 2
+    StockDiagnostics.log("货号复核布局 top=\(top) bottom=\(bottom) column=\(left)...\(right) block=\(block) scale=\(scale) candidates=\(bodyAnchors.count)")
     var output = StockOCRRefinement.coalesce(cells)
-    for start in stride(from: Int(top.rounded(.down)), to: Int(bottom.rounded(.up)), by: 1200) {
+    for start in stride(from: Int(top.rounded(.down)), to: Int(bottom.rounded(.up)), by: block) {
       try autoreleasepool {
         progress("正在复核货号完整性")
-        let y = max(top.rounded(.down), CGFloat(start - 80))
-        let end = min(bottom.rounded(.up), CGFloat(start + 1280))
+        let y = max(top.rounded(.down), CGFloat(start - margin))
+        let end = min(bottom.rounded(.up), CGFloat(start + block + margin))
         let crop = CGRect(x: left, y: y, width: right - left, height: end - y)
-        let raw = try inventoryRow(original, crop: crop, scale: 2,
-          requiredPattern: "^[Gg][Ss][0-9]{4,8}[-－—][0-9]{2,3}$")
-        let enhanced = try inventoryRow(clean, crop: crop, scale: 2,
-          requiredPattern: "^[Gg][Ss][0-9]{4,8}[-－—][0-9]{2,3}$")
-        for candidate in raw {
-          guard candidate.box.midY >= CGFloat(start), candidate.box.midY < CGFloat(start + 1200),
-            let code = StockOCRRefinement.canonicalProductCode(candidate.text),
-            let agreement = StockOCRRefinement.match(candidate, in: enhanced),
-            code == StockOCRRefinement.canonicalProductCode(agreement.text) else { continue }
-          // 已有货号的物理位置不新增锚点；仅补回原先没有货号的区域。
-          let existing = output.indices.filter { index in
-            let cell = output[index]
-            return StockOCRRefinement.compact(cell.text).range(of:
-              "[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}", options: .regularExpression) != nil &&
-              !cell.box.intersection(candidate.box).isNull &&
-              cell.box.intersection(candidate.box).height >= min(cell.box.height, candidate.box.height) * 0.5
-          }
-          if existing.isEmpty {
-            output.append(StockOCRCell(text: code,
-              confidence: min(candidate.confidence, agreement.confidence), box: candidate.box))
-          } else if existing.count == 1 {
-            let index = existing[0]
-            let old = output[index]
-            let expression = try NSRegularExpression(pattern: "[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}")
-            let matches = expression.matches(in: old.text, range: NSRange(old.text.startIndex..., in: old.text))
-            if matches.count == 1 {
-              let oldCode = (old.text as NSString).substring(with: matches[0].range)
-              if oldCode == code { continue }
-              // 原图和增强图实际读到相同数字货号时，允许修复已有的含糊锚点。
-              // 货号与名称处于同一文字块时只改货号，保留原名称与规格。
-              let repaired = (old.text as NSString).replacingCharacters(in: matches[0].range, with: code)
-              output[index] = StockOCRCell(text: repaired,
-                confidence: min(old.confidence, min(candidate.confidence, agreement.confidence)), box: old.box)
-            }
-          }
+        let raw = try inventoryRow(original, crop: crop, scale: scale,
+          requiredPattern: "^[Gg][Ss5$][0-9]{4,8}[-－—][0-9]{2,3}$")
+        let enhanced = try inventoryRow(clean, crop: crop, scale: scale,
+          requiredPattern: "^[Gg][Ss5$][0-9]{4,8}[-－—][0-9]{2,3}$")
+        let owned = raw.filter {
+          $0.box.midY >= CGFloat(start) && $0.box.midY < CGFloat(start + block)
         }
+        output = try mergeVerifiedProductCodes(output, raw: owned, clean: enhanced)
       }
     }
-    let expression = try NSRegularExpression(pattern: "[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}")
-    for index in output.indices {
-      let old = output[index]
+    let expression = try NSRegularExpression(pattern: "[Gg][Ss5$][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}")
+    let unresolved = output.filter { old in
+      guard old.box.minX < right, old.box.maxX > left,
+        old.box.midY > top, old.box.midY < bottom else { return false }
+      if StockOCRRefinement.isProductCodeCandidate(old.text) {
+        return StockOCRRefinement.canonicalProductCode(old.text) == nil
+      }
       let matches = expression.matches(in: old.text, range: NSRange(old.text.startIndex..., in: old.text))
-      guard old.box.minX < CGFloat(columnX), matches.count == 1 else { continue }
+      guard matches.count == 1 else { return false }
       let oldCode = (old.text as NSString).substring(with: matches[0].range)
-      guard StockOCRRefinement.canonicalProductCode(oldCode) == nil else { continue }
+      return StockOCRRefinement.canonicalProductCode(oldCode) == nil
+    }
+    for old in unresolved {
       try autoreleasepool {
         progress("正在放大复核含糊货号")
-        let x = max(0, (old.box.minX - 8).rounded(.down))
+        let x = max(0, min(left, old.box.minX - 8).rounded(.down))
         let y = max(top.rounded(.down), (old.box.minY - 8).rounded(.down))
         let crop = CGRect(x: x, y: y,
-          width: min(CGFloat(columnX), (old.box.maxX + 8).rounded(.up)) - x,
+          width: min(CGFloat(columnX), max(right, old.box.maxX + 8).rounded(.up)) - x,
           height: min(bottom.rounded(.up), (old.box.maxY + 8).rounded(.up)) - y)
         let raw = try inventoryRow(original, crop: crop, scale: 4,
-          requiredPattern: "^[Gg][Ss][0-9]{4,8}[-－—][0-9]{2,3}$")
+          requiredPattern: "^[Gg][Ss5$][0-9]{4,8}[-－—][0-9]{2,3}$", diagnosticContext: "含糊货号原图")
         let enhanced = try inventoryRow(clean, crop: crop, scale: 4,
-          requiredPattern: "^[Gg][Ss][0-9]{4,8}[-－—][0-9]{2,3}$")
-        if raw.count == 1, enhanced.count == 1,
-          let code = StockOCRRefinement.canonicalProductCode(raw[0].text),
-          code == StockOCRRefinement.canonicalProductCode(enhanced[0].text),
-          StockOCRRefinement.match(raw[0], in: enhanced) != nil {
-          let repaired = (old.text as NSString).replacingCharacters(in: matches[0].range, with: code)
-          output[index] = StockOCRCell(text: repaired,
-            confidence: min(old.confidence, min(raw[0].confidence, enhanced[0].confidence)), box: old.box)
-        }
+          requiredPattern: "^[Gg][Ss5$][0-9]{4,8}[-－—][0-9]{2,3}$", diagnosticContext: "含糊货号去水印")
+        let owned = raw.filter { $0.box.midY >= old.box.minY && $0.box.midY < old.box.maxY }
+        output = try mergeVerifiedProductCodes(output, raw: owned, clean: enhanced)
       }
     }
+    StockDiagnostics.log("货号复核完成 未恢复=\(output.filter { $0.box.midY > top && $0.box.midY < bottom && $0.box.minX < right && StockOCRRefinement.isProductCodeCandidate($0.text) && StockOCRRefinement.canonicalProductCode($0.text) == nil }.map { "\($0.text)@\($0.box)" })")
     return output
   }
 

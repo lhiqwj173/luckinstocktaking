@@ -138,6 +138,99 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(StockOCRRefinement.canonicalProductCode("活动周边 O202609YL1"))
   }
 
+  func testGoodsStopAtPreparedHeadersEvenWhenSectionInformationIsMissingOrMisread() throws {
+    func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
+    }
+    XCTAssertFalse(StockOCRRefinement.isPreparedSectionLabel("预制物料包装"))
+    XCTAssertFalse(StockOCRRefinement.isPreparedSectionLabel("预制物料包装箱"))
+    XCTAssertFalse(StockOCRRefinement.isPreparedSectionLabel("【青金桔】-预制作"))
+    let goods = [cell("货物规格名称", 20, 0), cell("实盘总库存", 440, 0),
+      cell("预制物料包装", 80, 60), cell("GS00448-02", 80, 85), cell("2捆", 500, 70)]
+    let prepared = [cell("预制物料名称", 20, 200), cell("实盘总库存", 440, 200),
+      cell("青金桔-预制作", 20, 260), cell("12个", 500, 260), cell("其他信息", 20, 320)]
+    for label in ["", "预制物料信息", "预制物料倌息", "预制物料值息", "预制物料值思", "预制物料倍息"] {
+      let cells = goods + (label.isEmpty ? [] : [cell(label, 20, 160)]) + prepared
+      let rows = try StockTableParser.rows(Array(cells.reversed()))
+      XCTAssertEqual(rows.count, 1, label)
+      XCTAssertEqual(rows[0].cells, ["预制物料包装\nGS00448-02", "2捆"], label)
+      XCTAssertEqual(StockTableParser.goodsBottom(cells, below: 20), label.isEmpty ? 200 : 160)
+    }
+    let productAtHeaderLeft = goods + [cell("预制物料包装", 20, 130),
+      cell("GS00448-03", 80, 155), cell("3捆", 500, 140)] + prepared
+    XCTAssertEqual(try StockTableParser.rows(productAtHeaderLeft).count, 2,
+      "即使品名靠近预制表头，只要有对应货号，就不能把它当分节标签")
+    let incomplete = goods + [cell("缺少尾部货号的另一商品", 80, 120)] + prepared
+    XCTAssertThrowsError(try StockTableParser.rows(incomplete), "分区修复不能隐藏最后一条货物缺货号")
+    XCTAssertThrowsError(try StockTableParser.rows(goods +
+      [cell("另一商品", 80, 120), cell("G500448-03", 80, 145)] + prepared))
+  }
+
+  func testCorruptCodeCandidatesOnlyLocatePixelsAndRequireTwoActualReadings() throws {
+    func cell(_ text: String, _ y: Double, confidence: Double = 0.3) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: confidence, box: CGRect(x: 42, y: y, width: 68, height: 11))
+    }
+    for (reading, expected) in [("G500448-02", "GS00448-02"), ("G$00587-10", "GS00587-10"),
+      ("007126.02", "GS00716-02"), ("200716002", "GS00716-02")] {
+      XCTAssertTrue(StockOCRRefinement.isProductCodeCandidate(reading))
+      XCTAssertNil(StockOCRRefinement.canonicalProductCode(reading), "候选文本不能直接变造为货号")
+      let name = cell("名称1L*12盒/箱", 60, confidence: 1)
+      let wrong = cell(reading, 100)
+      let neighbor = cell(expected, 160, confidence: 1)
+      let cells = [name, wrong, neighbor]
+      let raw = [cell(expected, 100, confidence: 0.8)]
+      let clean = [cell(expected, 100, confidence: 0.9)]
+      let recovered = try StockHistoryProcessor.mergeVerifiedProductCodes(cells, raw: raw, clean: clean)
+      XCTAssertEqual(recovered.map(\.text), [name.text, expected, expected])
+      XCTAssertEqual(recovered[1].confidence, wrong.confidence)
+      XCTAssertEqual(recovered[2].box, neighbor.box, "同货号的邻行不能被删掉或覆盖")
+      XCTAssertEqual(try StockHistoryProcessor.mergeVerifiedProductCodes(cells, raw: raw, clean: []).map(\.text),
+        cells.map(\.text))
+      XCTAssertEqual(try StockHistoryProcessor.mergeVerifiedProductCodes(cells, raw: raw,
+        clean: [neighbor]).map(\.text), cells.map(\.text), "不同位置的读数不能充当一致证据")
+      let disagreement = [cell("GS99999-99", 100, confidence: 1)]
+      XCTAssertEqual(try StockHistoryProcessor.mergeVerifiedProductCodes(cells, raw: raw,
+        clean: disagreement).map(\.text), cells.map(\.text))
+      if reading.hasPrefix("G") {
+        let repeated = [cell(reading, 100, confidence: 0.8)]
+        XCTAssertEqual(try StockHistoryProcessor.mergeVerifiedProductCodes(cells, raw: repeated,
+          clean: repeated)[1].text, expected, "固定前缀的两读一致校正必须逐位保留数字")
+      }
+    }
+    for reading in ["G500448-O2", "G$OO587-10", "G5-02", "GS00448-O2"] {
+      XCTAssertNil(StockOCRRefinement.productCodeReading(reading), "数字不明确时不能猜测")
+    }
+    let mixed = cell("名称1L*12盒/箱G$00587-10", 100)
+    let actual = [cell("GS00587-10", 100, confidence: 1)]
+    XCTAssertEqual(try StockHistoryProcessor.mergeVerifiedProductCodes([mixed], raw: actual,
+      clean: actual)[0].text, "名称1L*12盒/箱GS00587-10")
+  }
+
+  func testRealNarrowCodeColumnRecoversSevenGoodsWithoutLeavingCorruptPrefixes() throws {
+    let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "inventory_weekly_20260925",
+      withExtension: "jpg", subdirectory: "Fixtures"))
+    let source = try XCTUnwrap(UIImage(contentsOfFile: url.path)?.cgImage)
+    let original = try XCTUnwrap(source.cropping(to: CGRect(x: 0, y: 0, width: 320, height: 600)))
+    // 使用失败日志中的标题坐标和错误货号作为输入，后续货号必须从真实图片中复读。
+    let cells = [
+      StockOCRCell(text: "货物规格名称", confidence: 0.3,
+        box: CGRect(x: 14.87, y: 198.26, width: 66.25, height: 13.47)),
+      StockOCRCell(text: "实盘总库存", confidence: 0.3,
+        box: CGRect(x: 168.93, y: 198.65, width: 56.15, height: 12.71)),
+      StockOCRCell(text: "GS00119-04", confidence: 1,
+        box: CGRect(x: 42, y: 259, width: 65, height: 11)),
+      StockOCRCell(text: "G500448-02", confidence: 0.3,
+        box: CGRect(x: 42, y: 356, width: 68, height: 11)),
+    ]
+    let recovered = try StockHistoryProcessor.recoverProductCodes(cells, original: original,
+      clean: StockHistoryProcessor.textImage(original), columnX: 187, progress: { _ in })
+    let codes = recovered.compactMap { StockOCRRefinement.canonicalProductCode($0.text) }
+    XCTAssertEqual(Set(codes), Set(["GS00119-04", "GS00197-04", "GS00448-02", "GS00587-04",
+      "GS00587-10", "GS00595-01", "GS00804-01"]))
+    XCTAssertEqual(codes.count, 7, "丢行和重复行都必须失败")
+    XCTAssertFalse(recovered.contains { $0.text.contains("G500448") })
+  }
+
   func testRealDailyInventoryIncludesAllGoodsAndFivePreparedMaterials() throws {
     let url = try XCTUnwrap(Bundle(for: Self.self).url(
       forResource: "inventory_daily_20261005", withExtension: "jpg", subdirectory: "Fixtures"))
