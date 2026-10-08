@@ -63,6 +63,70 @@ void main() {
       );
     }
   });
+  test('评分偏低不能单独放行，批次与局部四读一致才通过', () {
+    final source = row(
+      quantity: '1.5盒',
+      readings: ['1.5盒', '1.5盒', '1.5盒', '1.5盒'],
+      confidence: .5,
+    );
+    final result = reconcileStockLine(source, [product]);
+    expect(result.ready, true);
+    expect(result.cells[1], '1.5盒');
+    expect(StockLine.fromJson(result.toJson()).inventoryReadings.length, 4);
+    expect(
+      reconcileStockLine(
+        row(
+          quantity: '1.5盒',
+          readings: ['1.5盒', '15盒', '1.5盒', '1.5盒'],
+          confidence: .5,
+        ),
+        [product],
+      ).ready,
+      false,
+    );
+    expect(
+      reconcileStockLine(
+        row(readings: ['12盒', '12盒', '12盒', ''], confidence: .5),
+        [product],
+      ).ready,
+      false,
+    );
+    expect(
+      reconcileStockLine(
+        row(readings: ['12盒', '12盒', '12盒', '12盒'], confidence: 0),
+        [product],
+      ).ready,
+      false,
+    );
+  });
+  test('格式差异按数量单位分区比较，重复数字和真实冲突不算一致', () {
+    final source = row(quantity: '1盒', readings: ['总库存：1.0盒', '1盒']);
+    expect(reconcileStockLine(source, [product]).ready, true);
+    expect(
+      reconcileStockLine(row(quantity: '2盒', readings: ['1盒1盒', '2盒']), [
+        product,
+      ]).ready,
+      false,
+    );
+    expect(
+      reconcileStockLine(row(quantity: '1盒', readings: ['1箱', '1盒']), [
+        product,
+      ]).ready,
+      false,
+    );
+    expect(
+      reconcileStockLine(row(quantity: '1盒', readings: ['-1盒', '1盒']), [
+        product,
+      ]).ready,
+      false,
+    );
+    expect(
+      reconcileStockLine(row(quantity: '1盒', readings: ['1盒', '冷藏1盒']), [
+        product,
+      ]).ready,
+      false,
+    );
+  });
   test('单位异常、重复数字、缺总量、分区漏项或合计冲突不能自动通过', () {
     for (final quantity in [
       '12瓶',

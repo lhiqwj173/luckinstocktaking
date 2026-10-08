@@ -107,6 +107,18 @@ class StockLine {
   StockInventory get inventory =>
       StockInventory.parse(cells[1], uncertain: inventoryUncertain);
   String get text => cells.join(' · ');
+  bool get inventoryReadingsAgree =>
+      inventoryReadings.length >= 2 &&
+      inventoryReadings.every(
+        (value) =>
+            value.trim().isNotEmpty &&
+            StockInventory.sameReading(value, cells[1]),
+      );
+  bool get inventoryEvidenceSufficient =>
+      inventoryReadingsAgree &&
+      inventoryConfidence != null &&
+      (inventoryConfidence! >= .8 ||
+          (inventoryReadings.length >= 4 && inventoryConfidence! > 0));
   String get pendingReason {
     if (!identityConfirmed) return '货物未匹配或规格有疑点';
     if (inventory.reviewStatus == '总库存与冷藏、冷冻合计不一致') {
@@ -118,19 +130,15 @@ class StockLine {
           inventory.totalMissing) {
         return inventory.reviewStatus;
       }
-      if (inventoryReadings.length != 2 ||
+      if (inventoryReadings.length < 2 ||
           inventoryReadings.any((value) => value.trim().isEmpty)) {
         return '库存缺少完整的复读证据';
       }
-      String key(String value) => value
-          .replaceAll(RegExp(r'\s+'), '')
-          .replaceAll('：', ':')
-          .replaceAll('．', '.');
-      if (inventoryReadings.any((value) => key(value) != key(cells[1]))) {
+      if (!inventoryReadingsAgree) {
         return '库存两次读数不一致';
       }
-      if (inventoryConfidence == null || inventoryConfidence! < .8) {
-        return '库存数字清晰度不足';
+      if (!inventoryEvidenceSufficient) {
+        return '库存识别证据不足，需核对原图';
       }
       return '库存单位、重复数字或分区完整性待核对';
     }

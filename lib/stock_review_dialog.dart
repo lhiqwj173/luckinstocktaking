@@ -29,6 +29,7 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
   bool _identity = false;
   bool _quantity = false;
   bool _busy = false;
+  late bool _choosingProduct;
   String? _error;
 
   @override
@@ -53,6 +54,7 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
     }
     _identity = _selected != null && widget.line.identityConfirmed;
     _quantity = widget.line.inventoryConfirmed;
+    _choosingProduct = !_identity;
   }
 
   @override
@@ -115,11 +117,9 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final candidates = matchProducts(
-      _search.text,
-      widget.line.category,
-      _products,
-    );
+    final candidates = _choosingProduct
+        ? matchProducts(_search.text, widget.line.category, _products)
+        : <ProductCandidate>[];
     return AlertDialog(
       title: const Text('确认货物与库存'),
       content: SizedBox(
@@ -130,55 +130,69 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text('对照原图确认数量和单位；空白保持空白，不能填成零。'),
-              SizedBox(
-                height: 220,
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 160),
                 child: InteractiveViewer(
                   maxScale: 6,
-                  child: ListView(
-                    children: [
-                      for (final image in widget.images)
-                        Image.memory(image, fit: BoxFit.fitWidth),
-                    ],
-                  ),
+                  child: widget.images.length == 1
+                      ? Image.memory(widget.images.single, fit: BoxFit.contain)
+                      : SizedBox(
+                          height: 160,
+                          child: ListView(
+                            children: [
+                              for (final image in widget.images)
+                                Image.memory(image, fit: BoxFit.fitWidth),
+                            ],
+                          ),
+                        ),
                 ),
               ),
               const SizedBox(height: 12),
               Text('原始识别：${widget.line.sourceCells.join(' · ')}'),
-              TextField(
-                controller: _search,
-                maxLines: 3,
-                onChanged: (_) => setState(() {}),
-                decoration: const InputDecoration(labelText: '搜索货物档案（名称或货号）'),
-              ),
-              if (candidates.isEmpty) const Text('未找到候选。可修改搜索，或核实后创建新货物。'),
-              for (final candidate in candidates)
-                ListTile(
-                  dense: true,
-                  title: Text(candidate.product.display),
-                  subtitle: Text(
-                    candidate.conflict
-                        ? '货号或规格有冲突，须核对原图'
-                        : candidate.exactCode
-                        ? '货号一致，仍需核对规格'
-                        : '模糊匹配候选，须人工确认',
-                  ),
-                  selected: _selected?.id == candidate.product.id,
-                  leading: Icon(
-                    _selected?.id == candidate.product.id
-                        ? Icons.check_circle
-                        : Icons.circle_outlined,
-                  ),
-                  onTap: _busy
+              if (!_choosingProduct)
+                TextButton(
+                  onPressed: _busy
                       ? null
-                      : () => setState(() {
-                          _selected = candidate.product;
-                          _identity = false;
-                        }),
+                      : () => setState(() => _choosingProduct = true),
+                  child: const Text('更换货物档案'),
                 ),
-              OutlinedButton(
-                onPressed: _busy ? null : _create,
-                child: const Text('核实后创建新货物'),
-              ),
+              if (_choosingProduct) ...[
+                TextField(
+                  controller: _search,
+                  maxLines: 3,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(labelText: '搜索货物档案（名称或货号）'),
+                ),
+                if (candidates.isEmpty) const Text('未找到候选。可修改搜索，或核实后创建新货物。'),
+                for (final candidate in candidates)
+                  ListTile(
+                    dense: true,
+                    title: Text(candidate.product.display),
+                    subtitle: Text(
+                      candidate.conflict
+                          ? '货号或规格有冲突，须核对原图'
+                          : candidate.exactCode
+                          ? '货号一致，仍需核对规格'
+                          : '模糊匹配候选，须人工确认',
+                    ),
+                    selected: _selected?.id == candidate.product.id,
+                    leading: Icon(
+                      _selected?.id == candidate.product.id
+                          ? Icons.check_circle
+                          : Icons.circle_outlined,
+                    ),
+                    onTap: _busy
+                        ? null
+                        : () => setState(() {
+                            _selected = candidate.product;
+                            _identity = false;
+                          }),
+                  ),
+                OutlinedButton(
+                  onPressed: _busy ? null : _create,
+                  child: const Text('核实后创建新货物'),
+                ),
+              ],
               if (_selected != null) Text('选中档案：${_selected!.display}'),
               CheckboxListTile(
                 value: _identity,
@@ -193,6 +207,9 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
                 onChanged: (_) => setState(() => _quantity = false),
                 decoration: const InputDecoration(labelText: '实盘总库存（保留单位和分区）'),
               ),
+              if (!widget.line.ready) Text(widget.line.pendingReason),
+              if (widget.line.inventoryReadings.isNotEmpty)
+                Text('库存读取记录：${widget.line.inventoryReadings.join(' / ')}'),
               CheckboxListTile(
                 value: _quantity,
                 onChanged: _busy

@@ -5,6 +5,19 @@ import XCTest
 @testable import Runner
 
 class RunnerTests: XCTestCase {
+  func testFocusedInventoryReadingsKeepLowScoresAndEarlierConflicts() {
+    let original = StockTextLine(cells: ["测试商品", "1.5袋"], confidence: 0.5,
+      inventoryReadings: ["1.5袋", "15袋"], inventoryConfidence: 0.5)
+    let cell = StockOCRCell(text: "1.5袋", confidence: 0.5,
+      box: CGRect(x: 500, y: 120, width: 50, height: 20))
+    let result = StockHistoryProcessor.appendFocusedInventoryReadings(original, raw: [cell], clean: [cell])
+    XCTAssertEqual(result.inventoryReadings, ["1.5袋", "15袋", "1.5袋", "1.5袋"])
+    XCTAssertEqual(result.inventoryConfidence, 0.5)
+    XCTAssertEqual(result.cells, original.cells)
+    let missing = StockHistoryProcessor.appendFocusedInventoryReadings(original, raw: [], clean: [cell])
+    XCTAssertNil(missing.inventoryConfidence)
+    XCTAssertEqual(missing.inventoryReadings, ["1.5袋", "15袋", "", "1.5袋"])
+  }
 
   func testInventoryVerificationKeepsActualReadingsInTheirOwnRows() throws {
     let rows = [

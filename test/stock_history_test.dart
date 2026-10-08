@@ -777,13 +777,14 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Icons.edit_outlined).at(1));
     await tester.pumpAndSettle();
+    expect(find.text('更换货物档案'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '搜索货物档案（名称或货号）'), findsNothing);
+    expect(
+      tester.getSize(find.byType(InteractiveViewer)).height,
+      lessThanOrEqualTo(160),
+    );
     await tester.enterText(
-      find
-          .descendant(
-            of: find.byType(AlertDialog),
-            matching: find.byType(TextField),
-          )
-          .at(1),
+      find.widgetWithText(TextField, '实盘总库存（保留单位和分区）'),
       '冷藏99个',
     );
     await tester.pumpAndSettle();

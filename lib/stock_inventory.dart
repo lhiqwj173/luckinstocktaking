@@ -81,6 +81,47 @@ class StockInventory {
   StockInventory(this.parts, {this.uncertain = false});
   final Map<String, StockQuantity> parts;
   final bool uncertain;
+
+  /// 比较真实数量、单位、分区；不把 OCR 重复数字相加后当作一致。
+  static bool sameReading(String left, String right) {
+    String? signature(String raw) {
+      final parsed = StockInventory.parse(raw);
+      if (parsed.needsReview || RegExp(r'[-－—一]\s*\d').hasMatch(raw)) {
+        return null;
+      }
+      final sections = parsed.parts.keys.toList()..sort();
+      final result = <String>[];
+      for (final section in sections) {
+        final part = parsed.parts[section]!;
+        final text = part.raw
+            .replaceAll(RegExp(r'\s+'), '')
+            .replaceAll('．', '.');
+        if (text.isEmpty ||
+            RegExp(r'\d+(?:\.\d+)?').allMatches(text).length !=
+                part.amounts.length) {
+          return null;
+        }
+        final units = part.amounts.keys.toList()..sort();
+        final blanks =
+            RegExp(r'[-－—一]+(?:[\u4e00-\u9fff]{0,3}|[A-Za-z]{0,3})')
+                .allMatches(text)
+                .map(
+                  (match) =>
+                      match.group(0)!.replaceAll(RegExp(r'[-－—一]+'), '-'),
+                )
+                .toList()
+              ..sort();
+        result.add(
+          '$section:${units.map((unit) => '$unit=${part.amounts[unit]!.format()}').join(',')};${blanks.join(',')}',
+        );
+      }
+      return result.join('|');
+    }
+
+    final first = signature(left);
+    return first != null && first == signature(right);
+  }
+
   bool get hasValue => !uncertain && parts.values.any((part) => part.hasValue);
   bool get needsReview =>
       uncertain || parts.values.any((part) => part.uncertain);

@@ -1161,7 +1161,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 20
+  static let recognitionRevision = 21
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1762,6 +1762,8 @@ enum StockHistoryProcessor {
       return readings.max { $0.count < $1.count }!
     })
     goods = try attachInventoryReadings(goods, primary: primaryInventoryCells, verification: verificationCells)
+    goods = try focusedInventoryEvidence(goods, original: cg, clean: recognitionImage,
+      columnX: columnX, primary: primaryInventoryCells, progress: progress)
     if let marker = cells.filter({
       StockOCRRefinement.isPreparedSectionLabel($0.text)
     }).min(by: { $0.box.minY < $1.box.minY }) {
@@ -1925,6 +1927,56 @@ enum StockHistoryProcessor {
       }
       return row
     }
+  }
+
+  /// 仅疑点行裁切数量区复读：保留批次读数，不用多数票掩盖真实数字冲突。
+  static func focusedInventoryEvidence(_ rows: [StockTextLine], original: CGImage, clean: CGImage,
+    columnX: Int, primary: [StockOCRCell], progress: (String) -> Void) throws -> [StockTextLine] {
+    var output = rows
+    var retried = 0
+    for index in rows.indices {
+      let row = rows[index]
+      let readings = row.inventoryReadings ?? []
+      let expected = StockOCRRefinement.compact(row.cells[1])
+      let agreed = readings.count == 2 && !expected.isEmpty &&
+        readings.allSatisfy { StockOCRRefinement.compact($0) == expected }
+      if agreed, let confidence = row.inventoryConfidence, confidence >= 0.8 { continue }
+      guard let top = row.sourceTop, let bottom = row.sourceBottom, top >= 0, bottom > top,
+        bottom <= Double(original.height), columnX > 0, columnX < original.width else {
+        throw StockHistoryError.invalid("库存局部复核位置无效")
+      }
+      try autoreleasepool {
+        progress("正在局部复核库存 · \(index + 1)/\(rows.count)")
+        let band = CGRect(x: CGFloat(columnX), y: CGFloat(top),
+          width: CGFloat(original.width - columnX), height: CGFloat(bottom - top))
+        let cells = primary.filter { Double($0.box.midY) >= top && Double($0.box.midY) < bottom }
+        let bounds = cells.reduce(CGRect.null) { $0.union($1.box) }
+        let crop = (bounds.isNull ? band : bounds.insetBy(dx: -6, dy: -6).intersection(band)).integral.intersection(band)
+        let raw = try inventoryRow(original, crop: crop, scale: 3,
+          diagnosticContext: "库存局部原图")
+        let enhanced = try inventoryRow(clean, crop: crop, scale: 4,
+          diagnosticContext: "库存局部增强图")
+        output[index] = appendFocusedInventoryReadings(row, raw: raw, clean: enhanced)
+        retried += 1
+        StockDiagnostics.log("库存局部复核 row=\(index + 1) name=\(row.cells[0]) readings=\(output[index].inventoryReadings ?? []) confidence=\(output[index].inventoryConfidence.map { String($0) } ?? "missing")")
+      }
+    }
+    StockDiagnostics.log("库存局部复核完成 总行数=\(rows.count) 复核行数=\(retried)")
+    return output
+  }
+
+  static func appendFocusedInventoryReadings(_ original: StockTextLine, raw: [StockOCRCell], clean: [StockOCRCell]) -> StockTextLine {
+    var row = original
+    func text(_ cells: [StockOCRCell]) -> String {
+      cells.sorted { $0.box.midY == $1.box.midY ? $0.box.minX < $1.box.minX : $0.box.midY < $1.box.midY }
+        .map(\.text).joined(separator: "\n")
+    }
+    row.inventoryReadings = (row.inventoryReadings ?? []) + [text(raw), text(clean)]
+    if let initial = row.inventoryConfidence, let first = raw.map(\.confidence).min(),
+      let second = clean.map(\.confidence).min() {
+      row.inventoryConfidence = min(initial, min(first, second))
+    } else { row.inventoryConfidence = nil }
+    return row
   }
 
   static func refine(_ cells: [StockOCRCell], original: CGImage, clean: CGImage,

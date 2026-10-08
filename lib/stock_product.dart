@@ -264,19 +264,7 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
       unitsValid &&
       !inventory.needsReview &&
       inventory.reviewStatus != '总库存与冷藏、冷冻合计不一致';
-  String readingKey(String value) => value
-      .replaceAll(RegExp(r'\s+'), '')
-      .replaceAll('：', ':')
-      .replaceAll('．', '.');
-  final agreed =
-      line.inventoryReadings.length == 2 &&
-      line.inventoryReadings.every(
-        (value) =>
-            value.trim().isNotEmpty &&
-            readingKey(value) == readingKey(line.cells[1]),
-      ) &&
-      line.inventoryConfidence != null &&
-      line.inventoryConfidence! >= .8;
+  final agreed = line.inventoryEvidenceSufficient;
   // 重复同单位的数字片段不允许通过解析器相加后掩盖 OCR 重复。
   final noDuplicateAmounts = inventory.parts.values.every(
     (part) =>
