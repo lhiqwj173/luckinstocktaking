@@ -12,7 +12,7 @@
       "fileSHA256": {
         "inference.onnx": "193bab7a04fca699a6c82e6abb5b81bdb28177f0abd4062552b04908dafb19f8"
       },
-      "configSHA256": "faceb44dd3afead59f9982661811f150c6b9eae8e69621498c0222b54c351a0e"
+      "configSHA256": "086f92e949b8bff20f8269478c0568667a6f512c63a5b97dc601910cb10a1581"
     },
     {
       "model": "tiny",
@@ -25,7 +25,7 @@
       "fileSHA256": {
         "inference.onnx": "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6"
       },
-      "configSHA256": "6922f5b26b2c952ae9e3c2906028ea65e6491261e1cb75ddd8e430809bd89ca9"
+      "configSHA256": "1eaaa1c05fe801a20a709d461af328082fb6097832dc273a0882160a4c239918"
     },
     {
       "model": "small",
@@ -38,7 +38,7 @@
       "fileSHA256": {
         "inference.onnx": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
       },
-      "configSHA256": "8602834a4442613869bf605576fee8c0c433d81c0c216a96ad914221da9eb916"
+      "configSHA256": "0c632d43d52935ef564b3978cad5218c6fe2c9c42793221fc97194dd7ba64573"
     },
     {
       "model": "small",
@@ -51,7 +51,7 @@
       "fileSHA256": {
         "inference.onnx": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
       },
-      "configSHA256": "84066feac287f88b732cf2b0297b764b317e63109785a8c5ebaf705b95e41032"
+      "configSHA256": "5408852654d791d23febdb7811529e93ff41180a0a8de48b4c367452f481b950"
     }
   ],
   "upstream": "https://github.com/PaddlePaddle/PaddleOCR",

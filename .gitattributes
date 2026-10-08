@@ -1,0 +1,4 @@
+# 模型配置的校验清单统一使用 LF；权重文件保持原始二进制字节。
+ios/Runner/OCRModels/**/*.json text eol=lf
+ios/Runner/OCRModels/manifest.json text eol=lf
+ios/Runner/OCRModels/**/*.onnx binary

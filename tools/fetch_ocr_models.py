@@ -16,9 +16,11 @@ def main():
     for model in manifest['models']:
         destination = root / model['model'] / model['role']
         config_file = destination / 'config.json'
-        if hashlib.sha256(config_file.read_bytes()).hexdigest() != model['configSHA256']:
+        # Git 可在 Windows 检出 CRLF；只统一换行，仍严格检查内容、字典及字典顺序。
+        config_bytes = config_file.read_bytes().replace(b'\r\n', b'\n')
+        if hashlib.sha256(config_bytes).hexdigest() != model['configSHA256']:
             raise ValueError(f'模型配置损坏：{config_file}')
-        config = json.loads(config_file.read_text(encoding='utf-8'))
+        config = json.loads(config_bytes.decode('utf-8'))
         if config['Global']['model_name'] != f'PP-OCRv6_{model["model"]}_{model["role"]}':
             raise ValueError('模型与固定配置不匹配')
         if all((destination / filename).is_file() for filename in model['files']):
