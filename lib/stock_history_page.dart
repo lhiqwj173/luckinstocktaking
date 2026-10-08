@@ -8,6 +8,8 @@ import 'stock_comparison.dart';
 import 'stock_comparison_page.dart';
 import 'stock_product.dart';
 import 'stock_review_dialog.dart';
+import 'stock_ocr_page.dart';
+import 'stock_ocr.dart';
 
 const historyInstructions =
     '1. 在瑞幸盘打开旧盘点单，使用系统录屏，从顶部缓慢滚动到底。\n'
@@ -329,6 +331,18 @@ class _StockHistoryPageState extends State<StockHistoryPage>
       appBar: AppBar(
         title: const Text('旧盘点单'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.tune),
+            tooltip: '识别模型设置',
+            onPressed: _busy
+                ? null
+                : () => Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const StockOCRPage(),
+                    ),
+                  ),
+          ),
           IconButton(
             onPressed: _busy || !_ready || _documents.length < 2
                 ? null
@@ -757,6 +771,20 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
           ),
           actions: [
             IconButton(
+              icon: const Icon(Icons.tune),
+              tooltip: '识别模型与对比',
+              onPressed: _saving || _preparing || _sharing
+                  ? null
+                  : () => Navigator.push(
+                      context,
+                      MaterialPageRoute<void>(
+                        builder: (_) => StockOCRPage(
+                          document: _document.edited(_title.text, _lines),
+                        ),
+                      ),
+                    ),
+            ),
+            IconButton(
               onPressed: _saving || _preparing || _sharing
                   ? null
                   : _manageProducts,
@@ -822,7 +850,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
           padding: const EdgeInsets.all(20),
           children: [
             Text(
-              '导入于 ${_date(widget.document.createdAt)} · ${_document.schemaVersion == 2 ? '${_lines.length} 项货物' : '等待整理货物表'}',
+              '导入于 ${_date(widget.document.createdAt)} · ${StockOCREngine.parse(_document.ocrEngine).label} · ${_document.schemaVersion == 2 ? '${_lines.length} 项货物' : '等待整理货物表'}',
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 12),

@@ -5,6 +5,49 @@ import XCTest
 @testable import Runner
 
 class RunnerTests: XCTestCase {
+  func testPaddleCTCKeepsDecimalAndSeparatesRepeatedCharacters() throws {
+    let dictionary = ["", "1", ".", "5", "袋"]
+    let ids = [0, 1, 1, 2, 0, 3, 4, 4, 0]
+    var values = [Float](repeating: 0.001, count: ids.count * dictionary.count)
+    for (step, token) in ids.enumerated() { values[step * dictionary.count + token] = 0.99 }
+    let output = try StockPaddleRuntime.decode(values, steps: ids.count, dictionary: dictionary, widthRatio: 1)
+    XCTAssertEqual(output.0, "1.5袋")
+    XCTAssertEqual(output.2.count, 4)
+    XCTAssertLessThan(output.2[0].1, output.2[1].1)
+    values[0] = .nan
+    XCTAssertThrowsError(try StockPaddleRuntime.decode(values, steps: ids.count, dictionary: dictionary, widthRatio: 1))
+    let repeatIds = [1, 1, 0, 1]
+    let repeated = repeatIds.flatMap { token in (0..<dictionary.count).map { $0 == token ? Float(0.99) : Float(0.001) } }
+    XCTAssertEqual(try StockPaddleRuntime.decode(repeated, steps: repeatIds.count, dictionary: dictionary, widthRatio: 1).0, "11")
+  }
+
+  func testPaddleGeometryKeepsTopOriginAndRejectsInvalidProbabilities() throws {
+    let width = 120; let height = 60
+    var values = [Float](repeating: 0, count: width * height)
+    for y in 10..<20 { for x in 20..<90 { values[y * width + x] = 0.95 } }
+    let boxes = try StockPaddleGeometry.detect(values, width: width, height: height)
+    XCTAssertEqual(boxes.count, 1)
+    XCTAssertGreaterThan(boxes[0][0].y, boxes[0][3].y)
+    XCTAssertLessThan(boxes[0][0].x, boxes[0][1].x)
+    XCTAssertGreaterThan(StockPaddleGeometry.bounds(boxes[0]).midY, 0.5)
+    values[0] = -1
+    XCTAssertThrowsError(try StockPaddleGeometry.detect(values, width: width, height: height))
+  }
+
+  func testBundledPaddleModelsRecognizeSyntheticInventory() throws {
+    let format = UIGraphicsImageRendererFormat(); format.scale = 1
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 250, height: 80), format: format).image { context in
+      UIColor.white.setFill(); context.fill(CGRect(x: 0, y: 0, width: 250, height: 80))
+      ("1.5袋" as NSString).draw(at: CGPoint(x: 25, y: 16), withAttributes: [
+        .font: UIFont.systemFont(ofSize: 40), .foregroundColor: UIColor.black])
+    }
+    for engine in [StockOCREngine.paddleTiny, .paddleSmall] {
+      let (results, context, _) = try StockOCR.withEngine(engine) { try StockOCR.recognize(XCTUnwrap(image.cgImage)) }
+      XCTAssertTrue(results.contains { $0.topCandidates(1).first?.string.contains("1.5") == true }, "\(engine.rawValue) 应识别清晰合成库存")
+      XCTAssertEqual(context.calls, 1)
+      XCTAssertGreaterThan(try StockOCR.modelBytes(engine), 0)
+    }
+  }
   func testFocusedInventoryReadingsKeepLowScoresAndEarlierConflicts() {
     let original = StockTextLine(cells: ["测试商品", "1.5袋"], confidence: 0.5,
       inventoryReadings: ["1.5袋", "15袋"], inventoryConfidence: 0.5)

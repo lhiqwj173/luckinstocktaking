@@ -1,0 +1,59 @@
+{
+  "formatVersion": 1,
+  "models": [
+    {
+      "model": "tiny",
+      "role": "det",
+      "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_det_onnx_infer.tar",
+      "sha256": "ff6ab415b0a6e0c488550f2fb5d5046f1719848df220b2dc21b56402a65bc05d",
+      "files": [
+        "inference.onnx"
+      ],
+      "fileSHA256": {
+        "inference.onnx": "193bab7a04fca699a6c82e6abb5b81bdb28177f0abd4062552b04908dafb19f8"
+      },
+      "configSHA256": "faceb44dd3afead59f9982661811f150c6b9eae8e69621498c0222b54c351a0e"
+    },
+    {
+      "model": "tiny",
+      "role": "rec",
+      "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_rec_onnx_infer.tar",
+      "sha256": "1e13b22717b1edd89d4cde4fda272b6c17d5b505c97c2baea99da1a3a2d54b29",
+      "files": [
+        "inference.onnx"
+      ],
+      "fileSHA256": {
+        "inference.onnx": "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6"
+      },
+      "configSHA256": "6922f5b26b2c952ae9e3c2906028ea65e6491261e1cb75ddd8e430809bd89ca9"
+    },
+    {
+      "model": "small",
+      "role": "det",
+      "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_small_det_onnx_infer.tar",
+      "sha256": "d218f6fbf0f1c23d2161bd6ac7f5eaa6104fa89955c09290497e31008e2618e4",
+      "files": [
+        "inference.onnx"
+      ],
+      "fileSHA256": {
+        "inference.onnx": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+      },
+      "configSHA256": "8602834a4442613869bf605576fee8c0c433d81c0c216a96ad914221da9eb916"
+    },
+    {
+      "model": "small",
+      "role": "rec",
+      "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_small_rec_onnx_infer.tar",
+      "sha256": "d267ab077a44a0eedb1ea8f8c542d263f211de8e9d7a029bf9fcfff7e5a88fb1",
+      "files": [
+        "inference.onnx"
+      ],
+      "fileSHA256": {
+        "inference.onnx": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+      },
+      "configSHA256": "84066feac287f88b732cf2b0297b764b317e63109785a8c5ebaf705b95e41032"
+    }
+  ],
+  "upstream": "https://github.com/PaddlePaddle/PaddleOCR",
+  "configurationCommit": "dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf"
+}

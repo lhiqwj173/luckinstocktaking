@@ -14,6 +14,8 @@ workflows:
         script: |
           flutter analyze
           flutter test -j 1
+      - name: Fetch verified OCR models
+        script: python3 tools/fetch_ocr_models.py
       - name: Build iOS simulator app
         script: flutter build ios --simulator --debug
       - name: Run deterministic iOS rule tests
@@ -59,6 +61,8 @@ workflows:
     scripts:
       - name: Install dependencies
         script: flutter pub get
+      - name: Fetch verified OCR models
+        script: python3 tools/fetch_ocr_models.py
       - name: Build iOS simulator app
         script: flutter build ios --simulator --debug
       - name: Validate Vision on representative original PNG screenshots

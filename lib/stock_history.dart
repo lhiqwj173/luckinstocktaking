@@ -107,18 +107,10 @@ class StockLine {
   StockInventory get inventory =>
       StockInventory.parse(cells[1], uncertain: inventoryUncertain);
   String get text => cells.join(' · ');
-  bool get inventoryReadingsAgree =>
-      inventoryReadings.length >= 2 &&
-      inventoryReadings.every(
-        (value) =>
-            value.trim().isNotEmpty &&
-            StockInventory.sameReading(value, cells[1]),
-      );
-  bool get inventoryEvidenceSufficient =>
-      inventoryReadingsAgree &&
-      inventoryConfidence != null &&
-      (inventoryConfidence! >= .8 ||
-          (inventoryReadings.length >= 4 && inventoryConfidence! > 0));
+  StockReadingEvidence get inventoryEvidence =>
+      StockInventory.evidence(cells[1], inventoryReadings, inventoryConfidence);
+  bool get inventoryReadingsAgree => inventoryEvidence.allAgree;
+  bool get inventoryEvidenceSufficient => inventoryEvidence.sufficient;
   String get pendingReason {
     if (!identityConfirmed) return '货物未匹配或规格有疑点';
     if (inventory.reviewStatus == '总库存与冷藏、冷冻合计不一致') {
@@ -134,8 +126,8 @@ class StockLine {
           inventoryReadings.any((value) => value.trim().isEmpty)) {
         return '库存缺少完整的复读证据';
       }
-      if (!inventoryReadingsAgree) {
-        return '库存两次读数不一致';
+      if (inventoryEvidence.conflicting > 0) {
+        return '库存存在有效数量、单位或分区冲突';
       }
       if (!inventoryEvidenceSufficient) {
         return '库存识别证据不足，需核对原图';
@@ -268,6 +260,7 @@ class StockDocument {
     required this.reviewed,
     this.schemaVersion = 1,
     this.recognitionRevision = 0,
+    this.ocrEngine = 'vision',
   });
   final String id;
   final String title;
@@ -277,6 +270,7 @@ class StockDocument {
   final bool reviewed;
   final int schemaVersion;
   final int recognitionRevision;
+  final String ocrEngine;
 
   factory StockDocument.fromJson(Map<String, dynamic> json) {
     if (json['schemaVersion'] != 1 && json['schemaVersion'] != 2) {
@@ -295,6 +289,7 @@ class StockDocument {
       reviewed: json['reviewed'] as bool,
       schemaVersion: json['schemaVersion'] as int,
       recognitionRevision: (json['recognitionRevision'] as int?) ?? 0,
+      ocrEngine: (json['ocrEngine'] as String?) ?? 'vision',
     );
     document.validate();
     return document;
@@ -303,6 +298,7 @@ class StockDocument {
   void validate() {
     if ((schemaVersion != 1 && schemaVersion != 2) ||
         recognitionRevision < 0 ||
+        !const ['vision', 'paddle_tiny', 'paddle_small'].contains(ocrEngine) ||
         !RegExp(
           r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
         ).hasMatch(id) ||
@@ -328,6 +324,7 @@ class StockDocument {
     reviewed: lines.every((line) => line.ready),
     schemaVersion: schemaVersion,
     recognitionRevision: recognitionRevision,
+    ocrEngine: ocrEngine,
   );
 
   bool matches(String query) {
@@ -340,6 +337,7 @@ class StockDocument {
   Map<String, dynamic> toJson() => {
     'schemaVersion': schemaVersion,
     'recognitionRevision': recognitionRevision,
+    'ocrEngine': ocrEngine,
     'id': id,
     'title': title,
     'createdAt': createdAt.toUtc().toIso8601String(),

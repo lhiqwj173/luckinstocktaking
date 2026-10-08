@@ -136,8 +136,8 @@ void main() {
         await tester.tap(find.text('只看待复核行'));
         await tester.pumpAndSettle();
         expect(find.text(products[0].display), findsNothing);
-        await tester.ensureVisible(find.text('库存两次读数不一致'));
-        expect(find.text('库存两次读数不一致'), findsOneWidget);
+        await tester.ensureVisible(find.text('库存存在有效数量、单位或分区冲突'));
+        expect(find.text('库存存在有效数量、单位或分区冲突'), findsOneWidget);
         expect(shared, isNull);
       } else {
         await tester.tap(find.byTooltip('导出与分享'));

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 
 import 'stock_history.dart';
+import 'stock_inventory.dart';
 
 String productKey(String value) => value
     .toLowerCase()
@@ -32,6 +33,46 @@ class StockProduct {
   final List<String> units;
   final List<String> aliases;
   final String category;
+
+  /// 仅从已核实规格的连续包装链提取换算；克数、长度不作库存单位推断。
+  Map<String, BigInt> get inventoryUnitFactors {
+    final spec = productKey(specification);
+    final slash = spec.split('/');
+    if (slash.length != 2 || !units.contains(slash.last)) return {};
+    final unitPattern =
+        (units.toList()..sort((a, b) => b.length.compareTo(a.length)))
+            .map(RegExp.escape)
+            .join('|');
+    final tokens = RegExp('(?:^|[*x])([1-9][0-9]*)($unitPattern)(?=[*x]|\$)')
+        .allMatches(slash.first)
+        .toList();
+    if (tokens.isEmpty) return {};
+    final suffix = slash.first
+        .substring(tokens.first.start)
+        .replaceFirst(RegExp(r'^[*x]'), '');
+    if (suffix !=
+            tokens
+                .map((token) => '${token.group(1)}${token.group(2)}')
+                .join('*') &&
+        suffix.replaceAll('x', '*') !=
+            tokens
+                .map((token) => '${token.group(1)}${token.group(2)}')
+                .join('*')) {
+      return {};
+    }
+    final factors = <String, BigInt>{};
+    var factor = BigInt.one;
+    for (final token in tokens) {
+      final unit = token.group(2)!;
+      if (factors.containsKey(unit)) return {};
+      factors[unit] = factor;
+      factor *= BigInt.parse(token.group(1)!);
+    }
+    if (factors.containsKey(slash.last)) return {};
+    factors[slash.last] = factor;
+    return factors;
+  }
+
   String get id => category == 'goods' ? code : 'prepared:${productKey(name)}';
   String get display => [
     name,
@@ -248,7 +289,10 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
     }
   }
   if (matched == null) return line;
-  final inventory = line.inventory;
+  final inventory = StockInventory.parse(
+    line.cells[1],
+    uncertain: line.inventoryUncertain && !line.inventoryEvidenceSufficient,
+  );
   final unitsValid =
       inventory.parts.values
           .expand((p) => p.amounts.keys)
@@ -284,25 +328,63 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
             RegExp(r'^(?:[-－—]+(?:[\u4e00-\u9fff]{1,3}|[A-Za-z]{1,3})?)+$')
                 .hasMatch(part.raw.replaceAll(RegExp(r'\s+'), '')),
       );
+  bool explicitPlaceholder(StockQuantity part) =>
+      part.amounts.isEmpty &&
+      RegExp(r'^(?:[-－—]+(?:[\u4e00-\u9fff]{1,3}|[A-Za-z]{1,3})?)+$')
+          .hasMatch(part.raw);
+  final hasSections =
+      inventory.parts.containsKey('冷藏') || inventory.parts.containsKey('冷冻');
   final completeSections =
-      (!inventory.parts.containsKey('冷藏') &&
-          !inventory.parts.containsKey('冷冻')) ||
+      !hasSections ||
       sections.every(inventory.parts.containsKey) &&
           sections.every(
             (section) =>
-                inventory.parts[section]!.hasValue &&
-                inventory.parts[section]!.amounts.keys.toSet().length ==
-                    inventory.parts['库存']!.amounts.length &&
-                inventory.parts[section]!.amounts.keys.toSet().containsAll(
-                  inventory.parts['库存']!.amounts.keys,
-                ),
+                inventory.parts[section]!.hasValue ||
+                explicitPlaceholder(inventory.parts[section]!),
           );
+  final factors = matched.inventoryUnitFactors;
+  StockAmount? converted(StockQuantity part) {
+    if (part.amounts.isEmpty) return null; // 未填写保持未填写，不补零参与换算。
+    var value = StockAmount(BigInt.zero, 0);
+    for (final entry in part.amounts.entries) {
+      if (entry.value.isZero) continue;
+      final factor = factors[entry.key];
+      if (factor == null) return null;
+      value = value.add(entry.value.multiply(factor));
+    }
+    return value;
+  }
+
+  var sectionSumValid = true;
+  if (hasSections && completeSections && hasCompleteTotal) {
+    final total = converted(inventory.parts['库存']!);
+    final chilled = converted(inventory.parts['冷藏']!);
+    final frozen = converted(inventory.parts['冷冻']!);
+    final sameUnits =
+        sections
+            .map(
+              (section) =>
+                  inventory.parts[section]!.amounts.keys.toList()..sort(),
+            )
+            .map((keys) => keys.join('|'))
+            .toSet()
+            .length ==
+        1;
+    sectionSumValid = total != null && chilled != null && frozen != null
+        ? total.subtract(chilled.add(frozen)).isZero
+        : sameUnits && inventory.reviewStatus != '总库存与冷藏、冷冻合计不一致';
+  }
+  final explicitTotalBlank =
+      inventory.parts['库存'] != null &&
+      explicitPlaceholder(inventory.parts['库存']!);
   final quantityConfirmed =
       quantityValid &&
       (line.inventoryConfirmed ||
           (agreed &&
               noDuplicateAmounts &&
-              ((hasCompleteTotal && completeSections) || explicitlyBlank)));
+              completeSections &&
+              sectionSumValid &&
+              (hasCompleteTotal || explicitlyBlank || explicitTotalBlank)));
   return StockLine(
     cells: [matched.display, line.cells[1]],
     confidence: line.confidence,
@@ -315,7 +397,7 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
         (!line.identityConfirmed ||
             !line.inventoryConfirmed ||
             line.autoConfirmed),
-    inventoryUncertain: line.inventoryUncertain,
+    inventoryUncertain: inventory.uncertain,
     sourceCells: line.sourceCells,
     sourceTop: line.sourceTop,
     sourceBottom: line.sourceBottom,

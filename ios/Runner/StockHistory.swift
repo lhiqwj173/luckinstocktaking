@@ -5,6 +5,7 @@ import Photos
 import UIKit
 import UniformTypeIdentifiers
 import Vision
+import CryptoKit
 
 enum StockHistoryError: LocalizedError {
   case invalid(String)
@@ -636,6 +637,7 @@ struct StockHistoryDocument: Codable {
   var lines: [StockTextLine]
   var reviewed: Bool
   var recognitionRevision: Int? = nil
+  var ocrEngine: String? = nil
 
   var needsRecognition: Bool {
     schemaVersion != 2 || (!reviewed && (recognitionRevision ?? 0) < StockHistoryProcessor.recognitionRevision)
@@ -653,6 +655,7 @@ struct StockHistoryDocument: Codable {
   func validate() throws {
     guard (schemaVersion == 1 || schemaVersion == 2), UUID(uuidString: id) != nil,
           (recognitionRevision == nil || recognitionRevision! >= 0),
+          (ocrEngine == nil || StockOCREngine(rawValue: ocrEngine!) != nil),
           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           Self.date(createdAt) != nil,
           imageName == "\(id).png", !lines.isEmpty,
@@ -770,7 +773,8 @@ enum StockHistoryStorage {
     let record = StockHistoryDocument(schemaVersion: 2, id: id,
       title: title,
       createdAt: ISO8601DateFormatter().string(from: Date()), imageName: "\(id).png",
-      lines: lines, reviewed: false, recognitionRevision: StockHistoryProcessor.recognitionRevision)
+      lines: lines, reviewed: false, recognitionRevision: StockHistoryProcessor.recognitionRevision,
+      ocrEngine: try StockOCREngine.selected().rawValue)
     try record.validate()
     guard let png = image.pngData() else { throw StockHistoryError.invalid("无法生成盘点单长截图") }
     let staging = try root().appendingPathComponent(".\(id)", isDirectory: true)
@@ -1161,7 +1165,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 21
+  static let recognitionRevision = 22
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1239,12 +1243,7 @@ enum StockHistoryProcessor {
     guard let tile = image.cropping(to: CGRect(x: 0, y: 0, width: image.width, height: height)) else {
       throw StockHistoryError.invalid("无法读取截图表头区域")
     }
-    let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
-    request.recognitionLanguages = ["zh-Hans", "en-US"]
-    request.usesLanguageCorrection = false
-    try VNImageRequestHandler(cgImage: textImage(tile), options: [:]).perform([request])
-    guard let results = request.results else { throw StockHistoryError.invalid("截图表头识别未返回结果") }
+    let results = try StockOCR.recognize(textImage(tile), level: .accurate)
     var nameHeaders: [CGRect] = []
     var stockHeaders: [CGRect] = []
     for observation in results {
@@ -1314,12 +1313,7 @@ enum StockHistoryProcessor {
     guard let tile = source.cropping(to: CGRect(x: 0, y: 0, width: source.width, height: height)) else {
       throw StockHistoryError.invalid("无法提取盘点单基本信息")
     }
-    let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
-    request.recognitionLanguages = ["zh-Hans", "en-US"]
-    request.usesLanguageCorrection = false
-    try VNImageRequestHandler(cgImage: textImage(tile), options: [:]).perform([request])
-    guard let results = request.results else { throw StockHistoryError.invalid("盘点基本信息识别未返回结果") }
+    let results = try StockOCR.recognize(textImage(tile), level: .accurate)
     let texts = try results.map { observation -> String in
       guard let candidate = observation.topCandidates(1).first else {
         throw StockHistoryError.invalid("盘点基本信息识别候选为空")
@@ -1594,13 +1588,7 @@ enum StockHistoryProcessor {
           throw StockHistoryError.invalid("无法分块读取长截图")
         }
         let tile = try enlargedOCRTile(sourceTile, scale: layout.scale)
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.recognitionLanguages = ["zh-Hans", "en-US"]
-        request.usesLanguageCorrection = false
-        request.minimumTextHeight = Float(min(0.02, 6 / Double(sourceTile.height)))
-        try VNImageRequestHandler(cgImage: tile, options: [:]).perform([request])
-        guard let results = request.results else { throw StockHistoryError.invalid("文字识别未返回结果") }
+        let results = try StockOCR.recognize(tile, level: .accurate, minimumTextHeight: Float(min(0.02, 6 / Double(sourceTile.height))))
         for observation in results {
           guard let candidate = observation.topCandidates(1).first else {
             throw StockHistoryError.invalid("文字识别候选为空")
@@ -1689,13 +1677,7 @@ enum StockHistoryProcessor {
             throw StockHistoryError.invalid("无法读取库存列")
           }
           let tile = try enlargedOCRTile(sourceTile, scale: verifying ? max(2, layout.scale) : layout.scale)
-          let request = VNRecognizeTextRequest()
-          request.recognitionLevel = .accurate
-          request.recognitionLanguages = ["zh-Hans", "en-US"]
-          request.usesLanguageCorrection = false
-          request.minimumTextHeight = Float(min(0.02, 6 / Double(sourceTile.height)))
-          try VNImageRequestHandler(cgImage: tile, options: [:]).perform([request])
-          guard let results = request.results else { throw StockHistoryError.invalid("库存识别未返回结果") }
+          let results = try StockOCR.recognize(tile, level: .accurate, minimumTextHeight: Float(min(0.02, 6 / Double(sourceTile.height))))
           for observation in results {
             guard let candidate = observation.topCandidates(1).first else {
               throw StockHistoryError.invalid("库存识别候选为空")
@@ -2293,14 +2275,8 @@ enum StockHistoryProcessor {
     context.interpolationQuality = .high
     context.draw(input, in: CGRect(x: 0, y: 0, width: tile.width * scale, height: tile.height * scale))
     guard let enlarged = context.makeImage() else { throw StockHistoryError.invalid("无法生成库存行识别图") }
-    let request = VNRecognizeTextRequest()
-    request.recognitionLevel = recognitionLevel
-    request.recognitionLanguages = requiredPattern == nil ? ["zh-Hans", "en-US"] : ["en-US"]
-    request.usesLanguageCorrection = false
-    request.minimumTextHeight = Float(min(requiredPattern == nil ? 0.02 : 0.01,
-      6 / Double(tile.height)))
-    try VNImageRequestHandler(cgImage: enlarged, options: [:]).perform([request])
-    guard let results = request.results else { throw StockHistoryError.invalid("库存行识别未返回结果") }
+    let results = try StockOCR.recognize(enlarged, level: recognitionLevel,
+      minimumTextHeight: Float(min(requiredPattern == nil ? 0.02 : 0.01, 6 / Double(tile.height))))
     if let label = diagnosticContext {
       let readings = results.map { observation in
         let candidates = observation.topCandidates(5).map { "\($0.string):\($0.confidence)" }.joined(separator: "|")
@@ -2318,7 +2294,7 @@ enum StockHistoryProcessor {
       guard !candidates.isEmpty else {
         throw StockHistoryError.invalid("库存行识别候选为空")
       }
-      let candidate: VNRecognizedText
+      let candidate: StockOCRText
       if let pattern = requiredPattern {
         guard let selected = candidates.first(where: {
           StockOCRRefinement.compact($0.string).range(of: pattern, options: .regularExpression) != nil
@@ -2475,6 +2451,79 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
       do {
         let value: Any?
         switch call.method {
+        case "getOCREngine": value = try StockOCREngine.selected().rawValue
+        case "setOCREngine":
+          guard let raw = call.arguments as? String, let engine = StockOCREngine(rawValue: raw) else {
+            throw StockHistoryError.invalid("识别模型参数无效")
+          }
+          _ = try StockOCR.modelBytes(engine)
+          try StockOCR.prepare(engine)
+          UserDefaults.standard.set(raw, forKey: "stock.ocr.engine")
+          value = nil
+        case "evaluateModel":
+          guard let arguments = call.arguments as? [String: Any], let id = arguments["id"] as? String,
+            let raw = arguments["engine"] as? String, let engine = StockOCREngine(rawValue: raw) else {
+            throw StockHistoryError.invalid("模型评估参数无效")
+          }
+          let folder = try StockHistoryStorage.directory(id)
+          let source = try JSONDecoder().decode(StockHistoryDocument.self,
+            from: Data(contentsOf: folder.appendingPathComponent("record.json")))
+          try source.validate()
+          guard source.id == id else { throw StockHistoryError.invalid("模型评估单据标识不一致") }
+          let bytes = try StockHistoryStorage.image(id)
+          guard let image = UIImage(data: bytes) else { throw StockHistoryError.invalid("模型评估原图无法解码") }
+          StockDiagnostics.begin("模型评估 \(raw) \(id)")
+          let (lines, context, elapsed) = try StockOCR.withEngine(engine) { try StockHistoryProcessor.recognize(image) }
+          let document = StockHistoryDocument(schemaVersion: 2, id: source.id, title: source.title,
+            createdAt: source.createdAt, imageName: source.imageName, lines: lines, reviewed: false,
+            recognitionRevision: StockHistoryProcessor.recognitionRevision, ocrEngine: raw)
+          try document.validate()
+          let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+          let metrics = StockOCRMetrics(elapsedMs: elapsed, modelLoadMs: context.loadSeconds * 1000,
+            ocrCalls: context.calls, processedPixels: context.pixels, modelBytes: try StockOCR.modelBytes(engine),
+            residentBytes: try StockOCR.residentBytes(), imageSHA256: hash,
+            policyRevision: StockHistoryProcessor.recognitionRevision)
+          let run = StockOCREvaluationRun(engine: engine, document: document, metrics: metrics,
+            evaluatedAt: ISO8601DateFormatter().string(from: Date()))
+          try JSONEncoder().encode(run).write(to: folder.appendingPathComponent("ocr-run-\(raw).json"), options: .atomic)
+          guard let json = String(data: try JSONEncoder().encode(run), encoding: .utf8) else {
+            throw StockHistoryError.invalid("模型评估无法编码为 UTF-8")
+          }
+          value = json
+        case "loadModelRuns":
+          guard let id = call.arguments as? String else { throw StockHistoryError.invalid("模型评估单据标识缺失") }
+          let folder = try StockHistoryStorage.directory(id)
+          var runs: [StockOCREvaluationRun] = []
+          let hash = SHA256.hash(data: try StockHistoryStorage.image(id)).map { String(format: "%02x", $0) }.joined()
+          for engine in StockOCREngine.allCases {
+            let file = folder.appendingPathComponent("ocr-run-\(engine.rawValue).json")
+            if FileManager.default.fileExists(atPath: file.path) {
+              let run = try JSONDecoder().decode(StockOCREvaluationRun.self, from: Data(contentsOf: file))
+              guard run.engine == engine, run.document.id == id else { throw StockHistoryError.invalid("保存的模型评估结果标识不一致") }
+              try run.document.validate()
+              if run.metrics.imageSHA256 == hash && run.metrics.policyRevision == StockHistoryProcessor.recognitionRevision { runs.append(run) }
+            }
+          }
+          guard let json = String(data: try JSONEncoder().encode(runs), encoding: .utf8) else { throw StockHistoryError.invalid("模型评估记录无法编码") }
+          value = json
+        case "loadOCRReference":
+          guard let id = call.arguments as? String else { throw StockHistoryError.invalid("参考单标识缺失") }
+          let file = try StockHistoryStorage.directory(id).appendingPathComponent("ocr-reference.json")
+          if FileManager.default.fileExists(atPath: file.path) {
+            let reference = try JSONDecoder().decode(StockHistoryDocument.self, from: Data(contentsOf: file))
+            guard reference.id == id else { throw StockHistoryError.invalid("参考单标识不一致") }
+            value = try reference.json()
+          } else { value = nil }
+        case "saveOCRReference":
+          guard let json = call.arguments as? String, let data = json.data(using: .utf8) else { throw StockHistoryError.invalid("参考单参数无效") }
+          let reference = try JSONDecoder().decode(StockHistoryDocument.self, from: data)
+          try reference.validate()
+          guard reference.schemaVersion == 2, reference.reviewed,
+            reference.lines.allSatisfy({ $0.identityConfirmed == true && $0.inventoryConfirmed == true && $0.productId != nil }) else {
+            throw StockHistoryError.invalid("参考单必须完成货物与库存核实")
+          }
+          try data.write(to: StockHistoryStorage.directory(reference.id).appendingPathComponent("ocr-reference.json"), options: .atomic)
+          value = nil
         case "pending": value = try StockHistoryStorage.pendingDocument()
         case "table":
           guard let id = call.arguments as? String else { throw StockHistoryError.invalid("盘点单标识缺失") }
@@ -2498,7 +2547,8 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
             else { title = original.title }
             let table = StockHistoryDocument(schemaVersion: 2, id: original.id, title: title,
               createdAt: original.createdAt, imageName: original.imageName, lines: rows, reviewed: false,
-              recognitionRevision: StockHistoryProcessor.recognitionRevision)
+              recognitionRevision: StockHistoryProcessor.recognitionRevision,
+              ocrEngine: try StockOCREngine.selected().rawValue)
             let backup = url.deletingLastPathComponent().appendingPathComponent(
               original.schemaVersion == 1 ? "legacy-recognized-lines.json" : "before-refinement.json")
             if original.schemaVersion == 2 || !FileManager.default.fileExists(atPath: backup.path) {

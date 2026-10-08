@@ -209,7 +209,36 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
               ),
               if (!widget.line.ready) Text(widget.line.pendingReason),
               if (widget.line.inventoryReadings.isNotEmpty)
-                Text('库存读取记录：${widget.line.inventoryReadings.join(' / ')}'),
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  title: Text(
+                    '库存复读：${widget.line.inventoryEvidence.supporting} 次一致，${widget.line.inventoryEvidence.conflicting} 次冲突，${widget.line.inventoryEvidence.abstentions} 次无效或漏读',
+                  ),
+                  children: [
+                    for (
+                      var index = 0;
+                      index < widget.line.inventoryReadings.length;
+                      index++
+                    )
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          '第 ${index + 1} 次：${StockInventory.sameReading(widget.line.inventoryReadings[index], widget.line.cells[1])
+                              ? '格式统一后与当前库存一致'
+                              : StockInventory.noiseVariant(widget.line.cells[1], widget.line.inventoryReadings[index])
+                              ? '包含无关文字，未计入有效读数'
+                              : StockInventory.readingSignature(widget.line.inventoryReadings[index]) == null
+                              ? '未形成完整有效库存，保留核对'
+                              : '数量、单位或分区不同'}',
+                        ),
+                        subtitle: Text(
+                          widget.line.inventoryReadings[index].trim().isEmpty
+                              ? '未读到内容'
+                              : widget.line.inventoryReadings[index],
+                        ),
+                      ),
+                  ],
+                ),
               CheckboxListTile(
                 value: _quantity,
                 onChanged: _busy

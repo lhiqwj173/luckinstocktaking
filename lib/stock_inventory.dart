@@ -26,6 +26,9 @@ class StockAmount {
     return subtract(StockAmount(-other.coefficient, other.scale));
   }
 
+  StockAmount multiply(BigInt factor) =>
+      StockAmount(coefficient * factor, scale);
+
   bool get isZero => coefficient == BigInt.zero;
   String format({bool signed = false}) {
     final digits = coefficient.abs().toString().padLeft(scale + 1, '0');
@@ -56,11 +59,14 @@ class StockQuantity {
       : amounts.entries.map((e) => '${e.value.format()}${e.key}').join(' ');
 
   factory StockQuantity.parse(String raw) {
-    final text = raw.replaceAll(RegExp(r'\s+'), '').replaceAll('．', '.');
+    final text = StockInventory.normalizeFormat(raw);
     final tokens = RegExp(
       r'(\d+(?:\.\d+)?)([\u4e00-\u9fff]{1,3}|[A-Za-z]{1,3})?|[-－—一]+([\u4e00-\u9fff]{0,3}|[A-Za-z]{0,3})',
     );
     if (text.isEmpty) return StockQuantity(raw, {});
+    if (RegExp(r'[-－—一]\d').hasMatch(text)) {
+      return StockQuantity(raw, {}, uncertain: true);
+    }
     final matches = tokens.allMatches(text).toList();
     final residue = text.replaceAll(tokens, '');
     if (residue.isNotEmpty) return StockQuantity(raw, {}, uncertain: true);
@@ -82,44 +88,107 @@ class StockInventory {
   final Map<String, StockQuantity> parts;
   final bool uncertain;
 
+  /// 仅统一字形和排版，不将汉字、负号或疑似小数改造成数字。
+  static String normalizeFormat(String raw) => String.fromCharCodes(
+    raw.runes.map(
+      (rune) => rune >= 0xff10 && rune <= 0xff19 ? rune - 0xfee0 : rune,
+    ),
+  ).replaceAll(RegExp(r'\s+'), '').replaceAll('．', '.').replaceAll('：', ':');
+
   /// 比较真实数量、单位、分区；不把 OCR 重复数字相加后当作一致。
   static bool sameReading(String left, String right) {
-    String? signature(String raw) {
-      final parsed = StockInventory.parse(raw);
-      if (parsed.needsReview || RegExp(r'[-－—一]\s*\d').hasMatch(raw)) {
+    final first = readingSignature(left);
+    return first != null && first == readingSignature(right);
+  }
+
+  static String? readingSignature(String raw) {
+    raw = normalizeFormat(raw);
+    final parsed = StockInventory.parse(raw);
+    if (parsed.needsReview || RegExp(r'[-－—一]\s*\d').hasMatch(raw)) {
+      return null;
+    }
+    final sections = parsed.parts.keys.toList()..sort();
+    final result = <String>[];
+    for (final section in sections) {
+      final part = parsed.parts[section]!;
+      final text = part.raw.replaceAll(RegExp(r'\s+'), '').replaceAll('．', '.');
+      if (text.isEmpty ||
+          RegExp(r'\d+(?:\.\d+)?').allMatches(text).length !=
+              part.amounts.length) {
         return null;
       }
-      final sections = parsed.parts.keys.toList()..sort();
-      final result = <String>[];
-      for (final section in sections) {
-        final part = parsed.parts[section]!;
-        final text = part.raw
-            .replaceAll(RegExp(r'\s+'), '')
-            .replaceAll('．', '.');
-        if (text.isEmpty ||
-            RegExp(r'\d+(?:\.\d+)?').allMatches(text).length !=
-                part.amounts.length) {
-          return null;
-        }
-        final units = part.amounts.keys.toList()..sort();
-        final blanks =
-            RegExp(r'[-－—一]+(?:[\u4e00-\u9fff]{0,3}|[A-Za-z]{0,3})')
-                .allMatches(text)
-                .map(
-                  (match) =>
-                      match.group(0)!.replaceAll(RegExp(r'[-－—一]+'), '-'),
-                )
-                .toList()
-              ..sort();
-        result.add(
-          '$section:${units.map((unit) => '$unit=${part.amounts[unit]!.format()}').join(',')};${blanks.join(',')}',
-        );
-      }
-      return result.join('|');
+      final units = part.amounts.keys.toList()..sort();
+      final blanks =
+          RegExp(r'[-－—一]+(?:[\u4e00-\u9fff]{0,3}|[A-Za-z]{0,3})')
+              .allMatches(text)
+              .map(
+                (match) => match.group(0)!.replaceAll(RegExp(r'[-－—一]+'), '-'),
+              )
+              .toList()
+            ..sort();
+      result.add(
+        '$section:${units.map((unit) => '$unit=${part.amounts[unit]!.format()}').join(',')};${blanks.join(',')}',
+      );
     }
+    return result.join('|');
+  }
 
-    final first = signature(left);
-    return first != null && first == signature(right);
+  static StockReadingEvidence evidence(
+    String expected,
+    List<String> readings,
+    double? confidence,
+  ) {
+    final signature = readingSignature(expected);
+    var supporting = 0;
+    var abstentions = 0;
+    var conflicting = 0;
+    for (final raw in readings) {
+      final actual = readingSignature(raw);
+      if (signature != null && actual == signature) {
+        supporting++;
+      } else if (noiseVariant(expected, raw)) {
+        abstentions++;
+      } else if (actual == null &&
+          !RegExp(r'[0-9〇零一二三四五六七八九十]').hasMatch(normalizeFormat(raw))) {
+        abstentions++;
+      } else {
+        conflicting++; // 包含数字的残缺读数也不能作为无意义噪声删除。
+      }
+    }
+    final allAgree =
+        signature != null &&
+        supporting >= 2 &&
+        conflicting == 0 &&
+        abstentions == 0;
+    final sufficient =
+        confidence != null &&
+        confidence > 0 &&
+        conflicting == 0 &&
+        signature != null &&
+        ((allAgree && (confidence >= .8 || supporting >= 4)) ||
+            (supporting >= 3 &&
+                abstentions > 0 &&
+                readings.every((raw) => normalizeFormat(raw).isNotEmpty)));
+    return StockReadingEvidence(
+      supporting,
+      abstentions,
+      conflicting,
+      allAgree,
+      sufficient,
+    );
+  }
+
+  /// 保留所有数字、标点、数量单位、分区词和汉字数词，仅识别附着的无关汉字。
+  /// 此读数仍属无效证据，只有另三次完整读数一致才可能解除阻断。
+  static bool noiseVariant(String expected, String raw) {
+    const meaningful =
+        '总库存冷藏冻零〇一二三四五六七八九十百千万个盒包袋箱瓶桶卷捆组支克斤升米张片根份罐把提条套副只抽毫厘分两磅吨枚粒杯勺剂页台枝束扎盆';
+    final normalized = normalizeFormat(raw);
+    final cleaned = normalized.replaceAllMapped(
+      RegExp(r'[\u4e00-\u9fff]'),
+      (match) => meaningful.contains(match[0]!) ? match[0]! : '',
+    );
+    return cleaned != normalized && sameReading(expected, cleaned);
   }
 
   bool get hasValue => !uncertain && parts.values.any((part) => part.hasValue);
@@ -154,6 +223,7 @@ class StockInventory {
   }
 
   factory StockInventory.parse(String raw, {bool uncertain = false}) {
+    raw = normalizeFormat(raw);
     final labels = RegExp(r'(总库存|冷藏|冷冻)\s*[:：·;；]?');
     final matches = labels.allMatches(raw).toList();
     final parts = <String, StockQuantity>{};
@@ -184,4 +254,16 @@ class StockInventory {
     }
     return StockInventory(parts, uncertain: uncertain);
   }
+}
+
+class StockReadingEvidence {
+  const StockReadingEvidence(
+    this.supporting,
+    this.abstentions,
+    this.conflicting,
+    this.allAgree,
+    this.sufficient,
+  );
+  final int supporting, abstentions, conflicting;
+  final bool allAgree, sufficient;
 }

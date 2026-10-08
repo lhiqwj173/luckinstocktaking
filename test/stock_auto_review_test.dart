@@ -134,7 +134,6 @@ void main() {
       '冷藏12盒',
       '总库存12盒 冷藏12盒',
       '总库存12盒 冷藏2盒 冷冻9盒',
-      '总库存1箱 冷藏6盒 冷冻6盒',
       '',
     ]) {
       expect(
@@ -147,7 +146,12 @@ void main() {
     }
   });
   test('明确零值、小数及可核算分区合计自动通过', () {
-    for (final quantity in ['0盒', '7.1盒', '总库存12盒 冷藏2盒 冷冻10盒']) {
+    for (final quantity in [
+      '0盒',
+      '7.1盒',
+      '总库存12盒 冷藏2盒 冷冻10盒',
+      '总库存1箱 冷藏6盒 冷冻6盒',
+    ]) {
       expect(
         reconcileStockLine(row(quantity: quantity), [product]).ready,
         true,
@@ -164,7 +168,7 @@ void main() {
     }
     expect(
       reconcileStockLine(row(quantity: '总库存-盒 冷藏0盒 冷冻0盒'), [product]).ready,
-      false,
+      true,
     );
     expect(reconcileStockLine(row(quantity: '-瓶12盒'), [product]).ready, false);
   });
@@ -208,5 +212,128 @@ void main() {
     expect(() => row(confidence: double.nan), throwsFormatException);
     expect(() => row(confidence: 1.1), throwsFormatException);
     expect(() => row().inventoryReadings.add('1盒'), throwsUnsupportedError);
+  });
+  test('无数字废读数不否决三次完整一致读数，数字冲突和漏读仍阻断', () {
+    expect(
+      reconcileStockLine(
+        row(quantity: '1盒', readings: ['1盒', '季', '1盒', '1盒'], confidence: .4),
+        [product],
+      ).ready,
+      true,
+    );
+    for (final noise in ['6', '15盒', '-盒', '', '1瓶', '一盒']) {
+      expect(
+        reconcileStockLine(
+          row(
+            quantity: '1盒',
+            readings: ['1盒', noise, '1盒', '1盒'],
+            confidence: .4,
+          ),
+          [product],
+        ).ready,
+        false,
+        reason: noise,
+      );
+    }
+    expect(
+      reconcileStockLine(
+        row(quantity: '1盒', readings: ['1盒', '季'], confidence: .99),
+        [product],
+      ).ready,
+      false,
+    );
+    expect(
+      reconcileStockLine(
+        row(
+          quantity: '1盒',
+          readings: ['1盒', '季', '1盒', '1盒'],
+          confidence: null,
+        ),
+        [product],
+      ).ready,
+      false,
+    );
+  });
+  test('全角数字与排版等价，但不丢单位、小数点和占位符', () {
+    final result = reconcileStockLine(
+      row(quantity: '1.5盒', readings: ['总 库 存：１．５０ 盒', '1.5盒']),
+      [product],
+    );
+    expect(result.ready, true);
+    expect(result.inventoryReadings.first, '总 库 存：１．５０ 盒');
+    for (final noise in ['1盒季', '季1盒']) {
+      expect(
+        reconcileStockLine(
+          row(
+            quantity: '1盒',
+            readings: ['1盒', noise, '1盒', '1盒'],
+            confidence: .4,
+          ),
+          [product],
+        ).ready,
+        true,
+      );
+    }
+    final unitConflict = StockLine(
+      cells: ['测试', '1升'],
+      confidence: .9,
+      inventoryReadings: ['1升', '1毫升', '1升', '1升'],
+      inventoryConfidence: .9,
+    );
+    expect(unitConflict.inventoryEvidenceSufficient, false);
+  });
+  test('固定规格包装链可验证不同单位的冷热合计，不改写原始数量', () {
+    final packed = StockProduct(
+      code: 'GS10535-01',
+      name: '测试司康',
+      specification: '80g*7个*6包/箱',
+      units: ['个', '包', '箱'],
+    );
+    expect(packed.inventoryUnitFactors, {
+      '个': BigInt.one,
+      '包': BigInt.from(7),
+      '箱': BigInt.from(42),
+    });
+    StockLine packedRow(String quantity) => StockLine(
+      cells: [packed.display, quantity],
+      confidence: .9,
+      inventoryReadings: List.filled(4, quantity),
+      inventoryConfidence: .5,
+    );
+    const valid = '总库存：7个\n冷藏：-包0个\n冷冻：1包0个';
+    final result = reconcileStockLine(packedRow(valid), [packed]);
+    expect(result.ready, true);
+    expect(result.cells[1], valid);
+    expect(
+      reconcileStockLine(packedRow(valid.replaceFirst('7个', '8个')), [
+        packed,
+      ]).ready,
+      false,
+    );
+    final unknown = StockProduct(
+      code: packed.code,
+      name: packed.name,
+      specification: '特殊包装',
+      units: packed.units,
+    );
+    final unknownLine = StockLine(
+      cells: [unknown.display, valid],
+      confidence: .9,
+      inventoryReadings: List.filled(4, valid),
+      inventoryConfidence: .5,
+    );
+    expect(reconcileStockLine(unknownLine, [unknown]).ready, false);
+  });
+  test('总库存明确未填写、冷热零库存一致可通过，保留空值不推算总量', () {
+    const quantity = '总库存：-盒\n冷藏：-箱0盒\n冷冻：-箱0盒';
+    final result = reconcileStockLine(row(quantity: quantity), [product]);
+    expect(result.ready, true);
+    expect(result.inventory.totalMissing, true);
+    expect(result.inventory.parts['库存']!.amounts, isEmpty);
+    expect(result.cells[1], quantity);
+    expect(
+      reconcileStockLine(row(quantity: '总库存：\n冷藏：0盒\n冷冻：0盒'), [product]).ready,
+      false,
+    );
   });
 }

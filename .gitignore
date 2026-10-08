@@ -57,3 +57,7 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# 固定清单下载并在构建时打包，权重不进入 Git。
+ios/Runner/OCRModels/**/*.onnx
+ios/Runner/OCRModels/**/*.onnx.data
