@@ -721,23 +721,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   List<StockLine> _reconcileProducts(
     List<StockLine> lines,
     List<StockProduct> products,
-  ) => lines.map((line) {
-    if (!line.identityConfirmed) return line;
-    final matching = products
-        .where(
-          (product) =>
-              product.id == line.productId &&
-              product.category == line.category &&
-              product.display == line.cells[0],
-        )
-        .toList();
-    final compatible =
-        matching.length == 1 &&
-        line.inventory.parts.values
-            .expand((part) => part.amounts.keys)
-            .every(matching.single.units.contains);
-    return compatible ? line : line.invalidateIdentity();
-  }).toList();
+  ) => reconcileStockLines(lines, products);
 
   @override
   Widget build(BuildContext context) {
@@ -844,7 +828,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
             const SizedBox(height: 12),
             Text(
               _document.schemaVersion == 2
-                  ? '已确认 ${_lines.where((line) => line.ready).length}/${_lines.length} 行。点击铅笔，分别对照原图确认货物与库存。未确认可保存草稿。'
+                  ? '自动通过 ${_lines.where((line) => line.ready && line.autoConfirmed).length} 行，人工确认 ${_lines.where((line) => line.ready && !line.autoConfirmed).length} 行，需复核 ${_lines.where((line) => !line.ready).length} 行。只需处理疑点，完成后确认单据即可导出。'
                   : '原始长图已保留，货物表尚未整理完成。可切换查看长图核对。',
             ),
             if (_error != null) ...[
@@ -909,7 +893,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
               SwitchListTile(
                 value: _onlyPending,
                 onChanged: (value) => setState(() => _onlyPending = value),
-                title: const Text('只看待确认行'),
+                title: const Text('只看待复核行'),
               ),
               OutlinedButton.icon(
                 onPressed:
@@ -921,7 +905,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                     ? null
                     : () => _edit(_lines.indexWhere((line) => !line.ready)),
                 icon: const Icon(Icons.fact_check_outlined),
-                label: const Text('校对下一条待确认'),
+                label: const Text('复核下一条疑点'),
               ),
               TextField(
                 controller: _query,
@@ -985,7 +969,11 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                                   ),
                                 SelectableText(entry.value.cells[0]),
                                 Text(
-                                  entry.value.ready ? '已确认' : '货物或库存待确认',
+                                  entry.value.ready
+                                      ? (entry.value.autoConfirmed
+                                            ? '自动通过'
+                                            : '已确认')
+                                      : entry.value.pendingReason,
                                   style: TextStyle(
                                     color: entry.value.ready
                                         ? null

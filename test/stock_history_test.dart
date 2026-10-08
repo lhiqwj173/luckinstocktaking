@@ -84,6 +84,75 @@ void main() {
     ),
   );
 
+  for (final conflict in [false, true]) {
+    testWidgets(conflict ? '只看疑点过滤自动通过行，库存冲突不放行' : '正常行自动通过后无需逐条确认即可导出', (
+      tester,
+    ) async {
+      final products = [
+        for (var i = 1; i <= 2; i++)
+          StockProduct(
+            code: 'GS1000$i-01',
+            name: '测试商品$i',
+            specification: '1L*12盒/箱',
+            units: ['盒', '箱'],
+          ),
+      ];
+      final table = tableRecord();
+      table['lines'] = [
+        for (var i = 0; i < 2; i++)
+          {
+            'cells': [products[i].display, '12盒'],
+            'confidence': .9,
+            'inventoryReadings': ['12盒', conflict && i == 1 ? '1盒' : '12盒'],
+            'inventoryConfidence': .95,
+          },
+      ];
+      Uint8List? shared;
+      final png = await longImageTile(tester);
+      messenger.setMockMethodCallHandler(StockHistoryStore.channel, (
+        call,
+      ) async {
+        if (call.method == 'loadProducts') {
+          return jsonEncode(products.map((p) => p.toJson()).toList());
+        }
+        if (call.method == 'imageTiles') return [png];
+        if (call.method == 'table') return jsonEncode(table);
+        if (call.method == 'shareBytes') {
+          shared = (call.arguments as Map)['bytes'] as Uint8List;
+          return null;
+        }
+        throw StateError('意外的平台请求：${call.method}');
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: StockDocumentPage(document: StockDocument.fromJson(table)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('自动通过 ${conflict ? 1 : 2} 行'), findsOneWidget);
+      expect(find.textContaining('需复核 ${conflict ? 1 : 0} 行'), findsOneWidget);
+      if (conflict) {
+        await tester.ensureVisible(find.text('只看待复核行'));
+        await tester.tap(find.text('只看待复核行'));
+        await tester.pumpAndSettle();
+        expect(find.text(products[0].display), findsNothing);
+        await tester.ensureVisible(find.text('库存两次读数不一致'));
+        expect(find.text('库存两次读数不一致'), findsOneWidget);
+        expect(shared, isNull);
+      } else {
+        await tester.tap(find.byTooltip('导出与分享'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('导出 Excel'));
+        await tester.pumpAndSettle();
+        expect(shared, isNotNull);
+        final sheet = Excel.decodeBytes(shared!).tables.values.single;
+        expect(sheet.rows.length, 3);
+        expect(sheet.rows[1][1]!.value, IntCellValue(12));
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
   testWidgets('快捷指令导入后自动打开校对页并保存修改', (tester) async {
     final png = await tester.runAsync(() async {
       final picture = ui.PictureRecorder();

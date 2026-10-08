@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter/services.dart';
 
+import 'stock_history.dart';
+
 String productKey(String value) => value
     .toLowerCase()
     .replaceAll(RegExp(r'\s+'), '')
@@ -191,6 +193,169 @@ List<ProductCandidate> matchProducts(
     return score != 0 ? score : a.product.id.compareTo(b.product.id);
   });
   return candidates.take(5).toList();
+}
+
+/// 自动通过只使用货物身份和实际复读证据，不根据档案补数字。
+StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
+  validateProducts(products);
+  if (line.cells.length != 2) return line;
+  StockProduct? matched;
+  if (line.identityConfirmed) {
+    final existing = products
+        .where(
+          (p) =>
+              p.id == line.productId &&
+              p.category == line.category &&
+              p.display == line.cells[0],
+        )
+        .toList();
+    if (existing.length == 1) matched = existing.single;
+    if (matched == null) return line.invalidateIdentity();
+  } else {
+    if (line.isPrepared) {
+      final exact = products
+          .where(
+            (p) =>
+                p.category == 'prepared' &&
+                productKey(p.name) == productKey(line.cells[0]),
+          )
+          .toList();
+      if (exact.length == 1) matched = exact.single;
+    } else {
+      // 自动匹配必须有唯一、准确的货号；模糊候选只在用户打开复核时计算。
+      final codes = _codePattern.allMatches(line.cells[0]).toList();
+      if (codes.length != 1) return line;
+      final code = productKey(codes.single.group(0)!).toUpperCase();
+      final exact = products
+          .where((p) => p.category == line.category && p.code == code)
+          .toList();
+      if (exact.isEmpty) return line;
+      final first = matchProducts(line.cells[0], line.category, exact).single;
+      final raw = line.cells[0].replaceAll(_codePattern, '');
+      List<String> numbers(String value) =>
+          RegExp(r'\d+(?:\.\d+)?')
+              .allMatches(productKey(value))
+              .map((m) => m.group(0)!)
+              .toList();
+      if (first.exactCode &&
+          !first.conflict &&
+          first.score >= .70 &&
+          numbers(raw).join('|') ==
+              numbers(first.product.name + first.product.specification)
+                  .join('|')) {
+        matched = first.product;
+      }
+    }
+  }
+  if (matched == null) return line;
+  final inventory = line.inventory;
+  final unitsValid =
+      inventory.parts.values
+          .expand((p) => p.amounts.keys)
+          .every(matched.units.contains) &&
+      inventory.parts.values.every(
+        (part) =>
+            RegExp(r'[-－—一]+([\u4e00-\u9fff]{1,3}|[A-Za-z]{1,3})')
+                .allMatches(part.raw)
+                .every((match) => matched!.units.contains(match.group(1))),
+      );
+  if (line.identityConfirmed && !unitsValid) return line.invalidateIdentity();
+  final quantityValid =
+      unitsValid &&
+      !inventory.needsReview &&
+      inventory.reviewStatus != '总库存与冷藏、冷冻合计不一致';
+  String readingKey(String value) => value
+      .replaceAll(RegExp(r'\s+'), '')
+      .replaceAll('：', ':')
+      .replaceAll('．', '.');
+  final agreed =
+      line.inventoryReadings.length == 2 &&
+      line.inventoryReadings.every(
+        (value) =>
+            value.trim().isNotEmpty &&
+            readingKey(value) == readingKey(line.cells[1]),
+      ) &&
+      line.inventoryConfidence != null &&
+      line.inventoryConfidence! >= .8;
+  // 重复同单位的数字片段不允许通过解析器相加后掩盖 OCR 重复。
+  final noDuplicateAmounts = inventory.parts.values.every(
+    (part) =>
+        RegExp(r'\d+(?:\.\d+)?').allMatches(part.raw).length ==
+        part.amounts.length,
+  );
+  final hasCompleteTotal = inventory.parts['库存']?.hasValue == true;
+  final sections = ['库存', '冷藏', '冷冻'];
+  // 两读均明确显示占位符时确认「原图未填写」，保留空值，绝不转换成零。
+  final explicitlyBlank =
+      inventory.parts.containsKey('库存') &&
+      (inventory.parts.length == 1 ||
+          sections.every(inventory.parts.containsKey)) &&
+      inventory.parts.values.every(
+        (part) =>
+            part.amounts.isEmpty &&
+            RegExp(r'^(?:[-－—]+(?:[\u4e00-\u9fff]{1,3}|[A-Za-z]{1,3})?)+$')
+                .hasMatch(part.raw.replaceAll(RegExp(r'\s+'), '')),
+      );
+  final completeSections =
+      (!inventory.parts.containsKey('冷藏') &&
+          !inventory.parts.containsKey('冷冻')) ||
+      sections.every(inventory.parts.containsKey) &&
+          sections.every(
+            (section) =>
+                inventory.parts[section]!.hasValue &&
+                inventory.parts[section]!.amounts.keys.toSet().length ==
+                    inventory.parts['库存']!.amounts.length &&
+                inventory.parts[section]!.amounts.keys.toSet().containsAll(
+                  inventory.parts['库存']!.amounts.keys,
+                ),
+          );
+  final quantityConfirmed =
+      quantityValid &&
+      (line.inventoryConfirmed ||
+          (agreed &&
+              noDuplicateAmounts &&
+              ((hasCompleteTotal && completeSections) || explicitlyBlank)));
+  return StockLine(
+    cells: [matched.display, line.cells[1]],
+    confidence: line.confidence,
+    category: line.category,
+    productId: matched.id,
+    identityConfirmed: true,
+    inventoryConfirmed: quantityConfirmed,
+    autoConfirmed:
+        quantityConfirmed &&
+        (!line.identityConfirmed ||
+            !line.inventoryConfirmed ||
+            line.autoConfirmed),
+    inventoryUncertain: line.inventoryUncertain,
+    sourceCells: line.sourceCells,
+    sourceTop: line.sourceTop,
+    sourceBottom: line.sourceBottom,
+    inventoryReadings: line.inventoryReadings,
+    inventoryConfidence: line.inventoryConfidence,
+  );
+}
+
+List<StockLine> reconcileStockLines(
+  List<StockLine> lines,
+  List<StockProduct> products,
+) {
+  final reconciled = lines
+      .map((line) => reconcileStockLine(line, products))
+      .toList();
+  final counts = <String, int>{};
+  for (final line in reconciled) {
+    if (line.productId != null) {
+      counts.update(line.productId!, (count) => count + 1, ifAbsent: () => 1);
+    }
+  }
+  return reconciled
+      .map(
+        (line) => line.autoConfirmed && counts[line.productId]! > 1
+            ? line.invalidateIdentity()
+            : line,
+      )
+      .toList();
 }
 
 class StockProductStore {

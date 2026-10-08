@@ -6,6 +6,30 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  func testInventoryVerificationKeepsActualReadingsInTheirOwnRows() throws {
+    let rows = [
+      StockTextLine(cells: ["商品A", "12盒"], confidence: 0.9, sourceTop: 100, sourceBottom: 200),
+      StockTextLine(cells: ["商品B", "1盒"], confidence: 0.9, sourceTop: 200, sourceBottom: 300)
+    ]
+    func cell(_ text: String, _ y: CGFloat, _ confidence: Double = 0.95) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: confidence, box: CGRect(x: 500, y: y, width: 50, height: 20))
+    }
+    let result = try StockHistoryProcessor.attachInventoryReadings(rows,
+      primary: [cell("12盒", 120), cell("1盒", 220)],
+      verification: [cell("1盒", 220, 0.85), cell("12盒", 120)])
+    XCTAssertEqual(result[0].inventoryReadings, ["12盒", "12盒"])
+    XCTAssertEqual(result[1].inventoryReadings, ["1盒", "1盒"])
+    XCTAssertEqual(result[1].inventoryConfidence, 0.85)
+    let missing = try StockHistoryProcessor.attachInventoryReadings(rows,
+      primary: [cell("12盒", 120)], verification: [cell("1盒", 120)])
+    XCTAssertEqual(missing[0].inventoryReadings, ["12盒", "1盒"])
+    XCTAssertEqual(missing[1].inventoryReadings, ["", ""])
+    XCTAssertNil(missing[1].inventoryConfidence)
+    XCTAssertEqual(missing[0].cells[1], "12盒")
+    XCTAssertThrowsError(try StockHistoryProcessor.attachInventoryReadings(
+      [StockTextLine(cells: ["商品", "12盒"], confidence: 0.9)], primary: [], verification: []))
+  }
+
   func testProductSeedPreservesUserChangesAndDeletedEntries() throws {
     func product(_ code: String, _ name: String) -> [String: Any] {
       ["id": code, "code": code, "name": name, "specification": "1L*12盒/箱",

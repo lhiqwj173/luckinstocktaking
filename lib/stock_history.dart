@@ -14,12 +14,21 @@ class StockLine {
     this.productId,
     this.identityConfirmed = false,
     this.inventoryConfirmed = false,
+    this.autoConfirmed = false,
+    List<String> inventoryReadings = const [],
+    this.inventoryConfidence,
     List<String>? sourceCells,
     this.sourceTop,
     this.sourceBottom,
   }) : cells = List.unmodifiable(cells),
+       inventoryReadings = List.unmodifiable(inventoryReadings),
        sourceCells = List.unmodifiable(sourceCells ?? cells) {
-    if (this.sourceCells.length != cells.length ||
+    if ((inventoryConfidence != null &&
+            (!inventoryConfidence!.isFinite ||
+                inventoryConfidence! < 0 ||
+                inventoryConfidence! > 1)) ||
+        (autoConfirmed && (!identityConfirmed || !inventoryConfirmed)) ||
+        this.sourceCells.length != cells.length ||
         (identityConfirmed && (productId == null || productId!.isEmpty)) ||
         (sourceTop == null) != (sourceBottom == null) ||
         (sourceTop != null &&
@@ -37,6 +46,9 @@ class StockLine {
   final String? productId;
   final bool identityConfirmed;
   final bool inventoryConfirmed;
+  final bool autoConfirmed;
+  final List<String> inventoryReadings;
+  final double? inventoryConfidence;
   final List<String> sourceCells;
   final double? sourceTop;
   final double? sourceBottom;
@@ -84,6 +96,8 @@ class StockLine {
     identityConfirmed: false,
     inventoryConfirmed: inventoryConfirmed,
     inventoryUncertain: inventoryUncertain,
+    inventoryReadings: inventoryReadings,
+    inventoryConfidence: inventoryConfidence,
     sourceCells: sourceCells,
     sourceTop: sourceTop,
     sourceBottom: sourceBottom,
@@ -93,6 +107,35 @@ class StockLine {
   StockInventory get inventory =>
       StockInventory.parse(cells[1], uncertain: inventoryUncertain);
   String get text => cells.join(' · ');
+  String get pendingReason {
+    if (!identityConfirmed) return '货物未匹配或规格有疑点';
+    if (inventory.reviewStatus == '总库存与冷藏、冷冻合计不一致') {
+      return inventory.reviewStatus;
+    }
+    if (!inventoryConfirmed) {
+      if (inventory.needsReview ||
+          !inventory.hasValue ||
+          inventory.totalMissing) {
+        return inventory.reviewStatus;
+      }
+      if (inventoryReadings.length != 2 ||
+          inventoryReadings.any((value) => value.trim().isEmpty)) {
+        return '库存缺少完整的复读证据';
+      }
+      String key(String value) => value
+          .replaceAll(RegExp(r'\s+'), '')
+          .replaceAll('：', ':')
+          .replaceAll('．', '.');
+      if (inventoryReadings.any((value) => key(value) != key(cells[1]))) {
+        return '库存两次读数不一致';
+      }
+      if (inventoryConfidence == null || inventoryConfidence! < .8) {
+        return '库存数字清晰度不足';
+      }
+      return '库存单位、重复数字或分区完整性待核对';
+    }
+    return inventory.reviewStatus;
+  }
 
   String? get reviewIssue {
     if (cells.length != 2) return null;
@@ -173,6 +216,10 @@ class StockLine {
       productId: json['productId'] as String?,
       identityConfirmed: (json['identityConfirmed'] as bool?) ?? false,
       inventoryConfirmed: (json['inventoryConfirmed'] as bool?) ?? false,
+      autoConfirmed: (json['autoConfirmed'] as bool?) ?? false,
+      inventoryReadings:
+          (json['inventoryReadings'] as List?)?.cast<String>() ?? const [],
+      inventoryConfidence: (json['inventoryConfidence'] as num?)?.toDouble(),
       sourceCells: (json['sourceCells'] as List?)?.cast<String>(),
       sourceTop: (json['sourceTop'] as num?)?.toDouble(),
       sourceBottom: (json['sourceBottom'] as num?)?.toDouble(),
@@ -186,6 +233,9 @@ class StockLine {
     'productId': productId,
     'identityConfirmed': identityConfirmed,
     'inventoryConfirmed': inventoryConfirmed,
+    'autoConfirmed': autoConfirmed,
+    'inventoryReadings': inventoryReadings,
+    'inventoryConfidence': inventoryConfidence,
     'sourceCells': sourceCells,
     if (sourceTop != null) 'sourceTop': sourceTop,
     if (sourceBottom != null) 'sourceBottom': sourceBottom,

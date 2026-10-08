@@ -106,6 +106,9 @@ struct StockTextLine: Codable {
   var sourceCells: [String]? = nil
   var sourceTop: Double? = nil
   var sourceBottom: Double? = nil
+  var inventoryReadings: [String]? = nil
+  var inventoryConfidence: Double? = nil
+  var autoConfirmed: Bool? = nil
 }
 
 struct StockOCRCell {
@@ -618,7 +621,8 @@ enum StockTableParser {
         confidence: (nameParts + stocks).map(\.confidence).min()!,
         inventoryUncertain: stocks.isEmpty || (!blankInventory(inventory) && inventory.range(of: "[0-9]", options: .regularExpression) == nil),
         sourceTop: Double(start), sourceBottom: Double(end < .greatestFiniteMagnitude ? end :
-          (nameParts + stocks).map { $0.box.maxY }.max()! + 12))
+          (nameParts + stocks).map { $0.box.maxY }.max()! + 12),
+        inventoryConfidence: stocks.map(\.confidence).min())
     }
   }
 }
@@ -1157,7 +1161,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 19
+  static let recognitionRevision = 20
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1672,44 +1676,49 @@ enum StockHistoryProcessor {
     let columnX = Int((header.box.midX - header.box.height * 0.75).rounded(.down))
     guard columnX > 0, columnX < cg.width else { throw StockHistoryError.invalid("库存列位置无效") }
     StockDiagnostics.log("库存表头 header=\(header.text)@\(header.box) columnX=\(columnX) 首轮cells=\(cells.count)")
-    cells.removeAll { $0.box.minX >= header.box.minX && $0.box.midY > header.box.maxY }
-    for start in stride(from: 0, to: cg.height, by: block) {
-      try autoreleasepool {
-        let top = max(0, start - margin)
-        let bottom = min(cg.height, start + block + margin)
-        progress("正在识别库存列 · \(start / block + 1)/\((cg.height + block - 1) / block)")
-        guard let sourceTile = recognitionImage.cropping(to: CGRect(x: columnX, y: top,
-          width: cg.width - columnX, height: bottom - top)) else {
-          throw StockHistoryError.invalid("无法读取库存列")
-        }
-        let tile = try enlargedOCRTile(sourceTile, scale: layout.scale)
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.recognitionLanguages = ["zh-Hans", "en-US"]
-        request.usesLanguageCorrection = false
-        request.minimumTextHeight = Float(min(0.02, 6 / Double(sourceTile.height)))
-        try VNImageRequestHandler(cgImage: tile, options: [:]).perform([request])
-        guard let results = request.results else { throw StockHistoryError.invalid("库存识别未返回结果") }
-        for observation in results {
-          guard let candidate = observation.topCandidates(1).first else {
-            throw StockHistoryError.invalid("库存识别候选为空")
+    cells.removeAll { $0.box.minX >= CGFloat(columnX) && $0.box.midY > header.box.maxY }
+    var verificationCells: [StockOCRCell] = []
+    for (source, verifying) in [(recognitionImage, false), (cg, true)] {
+      for start in stride(from: 0, to: cg.height, by: block) {
+        try autoreleasepool {
+          let top = max(0, start - margin)
+          let bottom = min(cg.height, start + block + margin)
+          progress("\(verifying ? "正在校验库存列" : "正在识别库存列") · \(start / block + 1)/\((cg.height + block - 1) / block)")
+          guard let sourceTile = source.cropping(to: CGRect(x: columnX, y: top,
+            width: cg.width - columnX, height: bottom - top)) else {
+            throw StockHistoryError.invalid("无法读取库存列")
           }
-          let dx = observation.topRight.x - observation.topLeft.x
-          let dy = observation.topRight.y - observation.topLeft.y
-          if abs(dy) * Double(tile.height) > abs(dx) * Double(tile.width) * 0.25 { continue }
-          let box = observation.boundingBox
-          let rect = CGRect(x: Double(columnX) + box.minX * Double(sourceTile.width),
-            y: Double(top) + (1 - box.maxY) * Double(sourceTile.height),
-            width: box.width * Double(sourceTile.width), height: box.height * Double(sourceTile.height))
-          if rect.midY >= Double(start), rect.midY < Double(min(cg.height, start + block)),
-            rect.midY > header.box.maxY {
-            let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { throw StockHistoryError.invalid("库存识别文字为空") }
-            cells.append(StockOCRCell(text: text, confidence: Double(candidate.confidence), box: rect))
+          let tile = try enlargedOCRTile(sourceTile, scale: verifying ? max(2, layout.scale) : layout.scale)
+          let request = VNRecognizeTextRequest()
+          request.recognitionLevel = .accurate
+          request.recognitionLanguages = ["zh-Hans", "en-US"]
+          request.usesLanguageCorrection = false
+          request.minimumTextHeight = Float(min(0.02, 6 / Double(sourceTile.height)))
+          try VNImageRequestHandler(cgImage: tile, options: [:]).perform([request])
+          guard let results = request.results else { throw StockHistoryError.invalid("库存识别未返回结果") }
+          for observation in results {
+            guard let candidate = observation.topCandidates(1).first else {
+              throw StockHistoryError.invalid("库存识别候选为空")
+            }
+            let dx = observation.topRight.x - observation.topLeft.x
+            let dy = observation.topRight.y - observation.topLeft.y
+            if abs(dy) * Double(tile.height) > abs(dx) * Double(tile.width) * 0.25 { continue }
+            let box = observation.boundingBox
+            let rect = CGRect(x: Double(columnX) + box.minX * Double(sourceTile.width),
+              y: Double(top) + (1 - box.maxY) * Double(sourceTile.height),
+              width: box.width * Double(sourceTile.width), height: box.height * Double(sourceTile.height))
+            if rect.midY >= Double(start), rect.midY < Double(min(cg.height, start + block)),
+              rect.midY > header.box.maxY {
+              let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+              guard !text.isEmpty else { throw StockHistoryError.invalid("库存识别文字为空") }
+              let cell = StockOCRCell(text: text, confidence: Double(candidate.confidence), box: rect)
+              if verifying { verificationCells.append(cell) } else { cells.append(cell) }
+            }
           }
         }
       }
     }
+    let primaryInventoryCells = cells.filter { $0.box.minX >= CGFloat(columnX) }
     cells = try refine(cells, original: cg, clean: recognitionImage, columnX: columnX, progress: progress)
     // 通用复核可能首次发现货号；货号完整性复核必须是进入行划分前的最后一步。
     cells = try recoverProductCodes(cells, original: cg, clean: recognitionImage,
@@ -1719,7 +1728,7 @@ enum StockHistoryProcessor {
       imageBottom: CGFloat(cg.height))
     let rowBands = try visualGoodsRows(cg, top: max(headers.name.box.maxY, header.box.maxY), bottom: goodsBottom)
     StockDiagnostics.log("图像定位货物行=\(rowBands.count)")
-    let goods = try StockTableParser.rows(cells, rowBands: rowBands, retryName: { start, end, left in
+    var goods = try StockTableParser.rows(cells, rowBands: rowBands, retryName: { start, end, left in
       progress("正在复核名称和规格")
       let top = max(0, start.rounded(.down))
       let bottom = min(CGFloat(cg.height), end.rounded(.up))
@@ -1752,6 +1761,7 @@ enum StockHistoryProcessor {
       // 识别任务成功但数量不确定：保留实际 OCR 文本并标记待确认，允许部分盘点单保存。
       return readings.max { $0.count < $1.count }!
     })
+    goods = try attachInventoryReadings(goods, primary: primaryInventoryCells, verification: verificationCells)
     if let marker = cells.filter({
       StockOCRRefinement.isPreparedSectionLabel($0.text)
     }).min(by: { $0.box.minY < $1.box.minY }) {
@@ -1789,7 +1799,7 @@ enum StockHistoryProcessor {
         }
       }
       let faintText = try textImage(cg, preserveFaintText: true)
-      let preparedRows = try StockTableParser.preparedRows(prepared) { start, end, quantityLeft in
+      var preparedRows = try StockTableParser.preparedRows(prepared) { start, end, quantityLeft in
         progress("正在复核预制物料数量")
         let y = max(0, start.rounded(.down))
         let x = max(0, quantityLeft.rounded(.down))
@@ -1870,11 +1880,51 @@ enum StockHistoryProcessor {
         StockDiagnostics.log("预制数量未恢复 crop=\(crop) unitCount=\(units.count)")
         return nil
       }
+      guard let preparedHeaders = StockTableParser.preparedHeaders(prepared) else {
+        throw StockHistoryError.invalid("预制库存复核缺少表头")
+      }
+      let quantityX = max((preparedHeaders.name.box.maxX + preparedHeaders.stock.box.minX) / 2,
+        preparedHeaders.stock.box.minX - preparedHeaders.stock.box.height)
+      for index in preparedRows.indices {
+        guard let start = preparedRows[index].sourceTop, let end = preparedRows[index].sourceBottom else {
+          throw StockHistoryError.invalid("预制库存复核缺少行位置")
+        }
+        let crop = CGRect(x: quantityX, y: start, width: CGFloat(cg.width) - quantityX,
+          height: min(Double(cg.height), end) - start)
+        let raw = try inventoryRow(cg, crop: crop, scale: 2).sorted { $0.box.minX < $1.box.minX }
+        let clean = try inventoryRow(faintText, crop: crop, scale: 2).sorted { $0.box.minX < $1.box.minX }
+        preparedRows[index].inventoryReadings = [raw.map(\.text).joined(), clean.map(\.text).joined()]
+        preparedRows[index].inventoryConfidence = (raw + clean).map(\.confidence).min()
+      }
       StockDiagnostics.log("预制行完成 rows=\(preparedRows.count)")
       return goods + preparedRows
     }
     StockDiagnostics.log("识别完成 货物行=\(goods.count)")
     return goods
+  }
+
+  /// 两次实际像素读数按原图行坐标配对，不能把邻行数量作为一致证据。
+  static func attachInventoryReadings(_ rows: [StockTextLine], primary: [StockOCRCell], verification: [StockOCRCell]) throws -> [StockTextLine] {
+    try rows.map { original in
+      guard original.cells.count == 2, let top = original.sourceTop, let bottom = original.sourceBottom,
+        top.isFinite, bottom.isFinite, top >= 0, bottom > top else {
+        throw StockHistoryError.invalid("库存复核行位置无效")
+      }
+      var row = original
+      func inRow(_ cells: [StockOCRCell]) -> [StockOCRCell] {
+        cells.filter { Double($0.box.midY) >= top && Double($0.box.midY) < bottom }
+          .sorted { $0.box.midY == $1.box.midY ? $0.box.minX < $1.box.minX : $0.box.midY < $1.box.midY }
+      }
+      let first = inRow(primary)
+      let readings = inRow(verification)
+      row.inventoryReadings = [first.map(\.text).joined(separator: "\n"), readings.map(\.text).joined(separator: "\n")]
+      if let initial = first.map(\.confidence).min(), let verified = readings.map(\.confidence).min() {
+        row.inventoryConfidence = min(initial, verified)
+      } else {
+        row.inventoryConfidence = nil
+      }
+      return row
+    }
   }
 
   static func refine(_ cells: [StockOCRCell], original: CGImage, clean: CGImage,

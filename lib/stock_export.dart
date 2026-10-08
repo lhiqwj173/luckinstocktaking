@@ -129,7 +129,7 @@ StockExportTable buildConfirmedStockExportTable(
   List<StockLine> lines,
 ) {
   if (lines.isEmpty || lines.any((line) => !line.ready)) {
-    throw const FormatException('请先逐行确认货物身份及库存，再导出已确认盘点单');
+    throw const FormatException('请先完成待复核行的货物和库存校对，再导出盘点单');
   }
   return buildStockExportTable(title, lines);
 }
