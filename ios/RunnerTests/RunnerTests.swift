@@ -57,6 +57,36 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(bands.map(\.height), [100, 100, 100])
   }
 
+  func testVisualRowsSeparateAdjacentSameColorUsingThinRules() throws {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 828, height: 500), format: format).image { context in
+      UIColor.white.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 828, height: 500))
+      UIColor(white: 245.0 / 255.0, alpha: 1).setFill()
+      context.fill(CGRect(x: 0, y: 220, width: 828, height: 280))
+      UIColor(white: 238.0 / 255.0, alpha: 1).setFill()
+      for y in [120, 220, 350] {
+        context.fill(CGRect(x: 0, y: CGFloat(y), width: 828, height: 2))
+      }
+    }
+    let bands = try StockHistoryProcessor.visualGoodsRows(XCTUnwrap(image.cgImage), top: 20, bottom: 500)
+    XCTAssertEqual(bands.map(\.minY), [20, 120, 220, 350])
+    XCTAssertEqual(bands.map(\.maxY), [120, 220, 350, 500])
+    func cell(_ text: String, _ x: CGFloat, _ y: CGFloat) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.9, box: CGRect(x: x, y: y, width: 100, height: 15))
+    }
+    let cells = [cell("货物规格名称", 20, 0), cell("实盘总库存", 440, 0)] +
+      (0..<4).flatMap { index -> [StockOCRCell] in
+        let y = bands[index].midY
+        return [cell("货物\(index)", 100, y - 20), cell("GS1000\(index)-01", 100, y),
+          cell("\(index + 1)盒", 500, y)]
+      }
+    let rows = try StockTableParser.rows(cells, rowBands: bands)
+    XCTAssertEqual(rows.map { $0.cells[1] }, ["1盒", "2盒", "3盒", "4盒"])
+    XCTAssertEqual(rows.map(\.sourceTop), [20, 120, 220, 350])
+  }
+
   func testVisualRowsKeepMissingCodeSeparateFromNextGoodsAndInventory() throws {
     func cell(_ text: String, _ x: CGFloat, _ y: CGFloat) -> StockOCRCell {
       StockOCRCell(text: text, confidence: 0.9, box: CGRect(x: x, y: y, width: 100, height: 15))

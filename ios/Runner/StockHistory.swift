@@ -521,6 +521,7 @@ enum StockTableParser {
       for band in bands {
         let parts = left.filter { $0.box.midY >= band.minY && $0.box.midY < band.maxY }
         guard !parts.isEmpty else {
+          StockDiagnostics.log("行定位校验失败：空名称区域 \(band)")
           throw StockHistoryError.invalid("货物行未识别到名称，请核对原图第 \(Int(band.minY)) 像素处")
         }
         let anchors = parts.reduce(0) { count, cell in
@@ -528,6 +529,7 @@ enum StockTableParser {
             range: NSRange(location: 0, length: (compact(cell.text) as NSString).length))
         }
         guard anchors <= 1 else {
+          StockDiagnostics.log("行定位校验失败：区域=\(band) 货号数=\(anchors) 文字=\(parts.map { "\($0.text)@\($0.box)" })")
           throw StockHistoryError.invalid("一个图像行识别出多个货号，不能确认行位置")
         }
         // 行身份由原图背景分隔定位。缺少或读错货号仍保留这一行，交给档案匹配与人工确认。
@@ -1155,7 +1157,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 18
+  static let recognitionRevision = 19
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1451,8 +1453,8 @@ enum StockHistoryProcessor {
       width < 600 ? min(4, Int(ceil(828 / Double(width)))) : 1)
   }
 
-  /// 固定版式交替灰白行；取每条扫描线的背景中位数，避免文字、小图与水印决定行身份。
-  /// 连续数个像素确认背景切换，排除细分隔线和 JPEG 边缘噪声。业务数值从不参与定位。
+  /// 灰白背景并不保证逐行交替：同色相邻货物依靠横向细分隔线区分。
+  /// 同时检测稳定背景切换和细分隔线；业务数值从不参与定位。
   static func visualGoodsRows(_ image: CGImage, top: CGFloat, bottom: CGFloat) throws -> [CGRect] {
     guard top.isFinite, bottom.isFinite, top >= 0, bottom > top, bottom <= CGFloat(image.height) else {
       throw StockHistoryError.invalid("货物图像区域无效")
@@ -1468,14 +1470,16 @@ enum StockHistoryProcessor {
     let first = Int(top.rounded(.up)), last = Int(bottom.rounded(.down))
     let hold = max(2, image.width / 160)
     guard last - first > hold else { throw StockHistoryError.invalid("货物正文高度不足") }
-    func white(_ y: Int) -> Bool {
+    let backgrounds = (first..<last).map { y -> UInt8 in
       var samples = (0..<64).map { index -> UInt8 in
         let x = min(image.width - 1, max(0, Int(Double(image.width) * (0.01 + Double(index) * 0.98 / 63))))
         return pixels[y * image.width + x]
       }
       samples.sort()
-      return samples[32] > 250
+      return samples[32]
     }
+    func background(_ y: Int) -> UInt8 { backgrounds[y - first] }
+    func white(_ y: Int) -> Bool { background(y) > 250 }
     var active = white(first), candidateStart = first
     var cuts = [first]
     for y in (first + 1)..<last {
@@ -1486,10 +1490,33 @@ enum StockHistoryProcessor {
         candidateStart = y + 1
       }
     }
-    cuts.append(last)
-    // 表头到第一件货物之间有留白；它没有达到一个货物行的最小高度，不作为货物。
+    // 原始截图中的分隔线通常只有 1～2 像素。不能把它们全部当噪声滤掉，
+    // 否则两个白底或两个灰底货物会合并。要求线两侧都是明亮背景且存在对比。
+    let maximumSeparatorHeight = max(3, image.width / 100)
+    var y = first
+    while y < last {
+      if background(y) > 242 { y += 1; continue }
+      let start = y
+      var darkest = background(y)
+      while y < last && background(y) <= 242 {
+        darkest = min(darkest, background(y))
+        y += 1
+      }
+      if start > first, y < last, y - start <= maximumSeparatorHeight,
+        background(start - 1) >= 244, background(y) >= 244,
+        Int(min(background(start - 1), background(y))) - Int(darkest) >= 4 {
+        cuts.append(start)
+      }
+    }
+    // 背景切换与分隔线可能定位同一个边界。合并近邻边界，保证行区域连续，
+    // 不能过滤短区域后在原图中留下未分配的文字或库存。
     let minimumHeight = max(12, image.width / 25)
-    let bands = zip(cuts, cuts.dropFirst()).filter { pair in pair.1 - pair.0 >= minimumHeight }.map { pair in
+    var boundaries = [first]
+    for cut in cuts.sorted() where cut - boundaries.last! >= minimumHeight && last - cut >= minimumHeight {
+      boundaries.append(cut)
+    }
+    boundaries.append(last)
+    let bands = zip(boundaries, boundaries.dropFirst()).map { pair in
       CGRect(x: 0, y: pair.0, width: image.width, height: pair.1 - pair.0)
     }
     guard !bands.isEmpty else { throw StockHistoryError.invalid("无法定位货物背景行，请核对原始截图") }
@@ -1538,7 +1565,7 @@ enum StockHistoryProcessor {
 
   static func recognize(_ image: UIImage, progress: @escaping (String) -> Void = { _ in }) throws -> [StockTextLine] {
     guard let cg = image.cgImage else { throw StockHistoryError.invalid("无法读取截图像素") }
-    StockDiagnostics.log("识别开始 图像=\(cg.width)x\(cg.height)")
+    StockDiagnostics.log("识别开始 revision=\(recognitionRevision) 图像=\(cg.width)x\(cg.height)")
     let recognitionImage = try textImage(cg)
     var cells: [StockOCRCell] = []
     var stockColumnStart: CGFloat?
@@ -2460,6 +2487,7 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
   }
 
   private static func fail(_ error: Error, result: FlutterResult) {
+    StockDiagnostics.log("任务失败：\(error.localizedDescription) details=\(String(reflecting: error))")
     result(FlutterError(code: "HISTORY_ERROR", message: error.localizedDescription,
       details: String(reflecting: error)))
   }
