@@ -13,11 +13,99 @@ enum StockHistoryError: LocalizedError {
   }
 }
 
+/// 兼容旧版列表；档案与初始化版本保存在同一个原子文件中。
+enum StockProductStorage {
+  struct Snapshot {
+    var products: [[String: Any]]
+    var appliedSeeds: [String]
+  }
+
+  static func validate(_ products: [[String: Any]]) throws {
+    var ids = Set<String>()
+    for product in products {
+      guard let id = product["id"] as? String, !id.isEmpty, ids.insert(id).inserted,
+        let name = product["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        let code = product["code"] as? String, product["specification"] is String,
+        let units = product["units"] as? [String], !units.isEmpty,
+        Set(units).count == units.count,
+        units.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+        let aliases = product["aliases"] as? [String],
+        aliases.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+        let category = product["category"] as? String, ["goods", "prepared"].contains(category) else {
+        throw StockHistoryError.invalid("货物档案字段缺失或标识重复")
+      }
+      let preparedKey = name.lowercased().replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+        .replacingOccurrences(of: "×", with: "*").replacingOccurrences(of: "－", with: "-")
+        .replacingOccurrences(of: "—", with: "-")
+      guard category == "goods"
+        ? (id == code && code.range(of: "^GS[0-9]{4,8}-[0-9]{2,3}$", options: .regularExpression) != nil)
+        : (code.isEmpty && id == "prepared:" + preparedKey) else {
+        throw StockHistoryError.invalid("货物档案货号或标识无效")
+      }
+    }
+  }
+
+  static func read(_ url: URL) throws -> Snapshot {
+    if !FileManager.default.fileExists(atPath: url.path) {
+      return Snapshot(products: [], appliedSeeds: []) // 尚未初始化的合法状态。
+    }
+    let value = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+    if let products = value as? [[String: Any]] {
+      try validate(products)
+      return Snapshot(products: products, appliedSeeds: [])
+    }
+    guard let object = value as? [String: Any], object["schemaVersion"] as? Int == 1,
+      let products = object["products"] as? [[String: Any]],
+      let versions = object["appliedSeeds"] as? [String],
+      versions.allSatisfy({ !$0.isEmpty }), Set(versions).count == versions.count else {
+      throw StockHistoryError.invalid("货物档案文件格式无效")
+    }
+    try validate(products)
+    return Snapshot(products: products, appliedSeeds: versions)
+  }
+
+  static func applying(_ seed: [[String: Any]], version: String, to snapshot: Snapshot) throws -> Snapshot {
+    guard !version.isEmpty, !seed.isEmpty else { throw StockHistoryError.invalid("内置货物档案为空或版本无效") }
+    try validate(seed)
+    try validate(snapshot.products)
+    if snapshot.appliedSeeds.contains(version) { return snapshot }
+    var result = snapshot
+    var ids = Set(snapshot.products.map { $0["id"] as! String })
+    for product in seed where ids.insert(product["id"] as! String).inserted {
+      result.products.append(product)
+    }
+    result.appliedSeeds.append(version)
+    return result
+  }
+
+  static func write(_ snapshot: Snapshot, to url: URL) throws {
+    try validate(snapshot.products)
+    let data = try JSONSerialization.data(withJSONObject: [
+      "schemaVersion": 1, "products": snapshot.products, "appliedSeeds": snapshot.appliedSeeds
+    ])
+    try data.write(to: url, options: .atomic)
+  }
+
+  static func json(_ products: [[String: Any]]) throws -> String {
+    let data = try JSONSerialization.data(withJSONObject: products)
+    guard let json = String(data: data, encoding: .utf8) else {
+      throw StockHistoryError.invalid("货物档案无法编码为 UTF-8")
+    }
+    return json
+  }
+}
+
 struct StockTextLine: Codable {
   var cells: [String]
   var confidence: Double
   var inventoryUncertain: Bool? = nil
   var category: String? = nil
+  var productId: String? = nil
+  var identityConfirmed: Bool? = nil
+  var inventoryConfirmed: Bool? = nil
+  var sourceCells: [String]? = nil
+  var sourceTop: Double? = nil
+  var sourceBottom: Double? = nil
 }
 
 struct StockOCRCell {
@@ -124,17 +212,24 @@ enum StockOCRRefinement {
       compact(raw.text) == compact(clean.text),
       min(raw.confidence, clean.confidence) > original.confidence + 0.05 else { return original }
     let text = compact(raw.text)
+    var replacement = raw.text
     if inventory {
       guard text.range(of: "[0-9]", options: .regularExpression) != nil else { return original }
-    } else if compact(original.text).range(of: "[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}",
-      options: .regularExpression) != nil {
-      guard compact(original.text).range(of: "^[Gg][Ss][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}$",
-        options: .regularExpression) != nil else { return original }
-      guard text.range(of: "^[Gg][Ss][0-9]{4,8}[-－—][0-9]{2,3}$",
-        options: .regularExpression) != nil else { return original }
+    } else {
+      if compact(original.text).range(of: "[Gg][Ss5$][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}",
+        options: .regularExpression) != nil {
+        guard compact(original.text).range(of: "^[Gg][Ss5$][0-9OoIl]{4,8}[-－—][0-9OoIl]{2,3}$",
+          options: .regularExpression) != nil else { return original }
+        guard productCodeReading(raw.text) != nil else { return original }
+      }
+      // 首轮可能没有连字符或 GS 前缀，通用复核才首次读出完整货号。
+      // 新出现的货号也必须规范化，不能把 G5/G$ 再写回已复核结果。
+      if let code = productCodeReading(raw.text), code == productCodeReading(clean.text) {
+        replacement = code
+      }
     }
     // 只采用两次真实识别中较低的评分，不人为加分；坐标仍用于原来的行配对。
-    return StockOCRCell(text: raw.text, confidence: min(raw.confidence, clean.confidence), box: original.box)
+    return StockOCRCell(text: replacement, confidence: min(raw.confidence, clean.confidence), box: original.box)
   }
 }
 
@@ -318,7 +413,9 @@ enum StockTableParser {
         "^[0-9]+(?:\\.[0-9]+)?(?:个|毫升|克)?$", options: .regularExpression) != nil
       return StockTextLine(cells: [parts.map(\.text).joined(separator: "\n"), text],
         confidence: (parts + stocks).map(\.confidence).min()!,
-        inventoryUncertain: stocks.isEmpty || !quantityValid, category: "prepared")
+        inventoryUncertain: stocks.isEmpty || !quantityValid, category: "prepared",
+        sourceTop: Double(start), sourceBottom: Double(end.isFinite && end < .greatestFiniteMagnitude ? end :
+          (parts + stocks).map { $0.box.maxY }.max()! + 12))
     }
   }
 
@@ -390,6 +487,7 @@ enum StockTableParser {
     return [text.startIndex..<text.endIndex]
   }
   static func rows(_ cells: [StockOCRCell],
+    rowBands: [CGRect]? = nil,
     retryName: ((CGFloat, CGFloat, CGFloat) throws -> [StockOCRCell]?)? = nil,
     retryInventory: ((CGFloat, CGFloat) throws -> [StockOCRCell])? = nil) throws -> [StockTextLine] {
     let ordered = StockOCRRefinement.coalesce(cells).sorted {
@@ -415,7 +513,35 @@ enum StockTableParser {
       .map { $0.box.minX }.sorted()
     var names: [[StockOCRCell]] = []
     var current: [StockOCRCell] = []
-    for cell in left {
+    if let bands = rowBands {
+      guard !bands.isEmpty, bands.allSatisfy({ $0.height > 0 }),
+        zip(bands, bands.dropFirst()).allSatisfy({ pair in pair.0.maxY <= pair.1.minY }) else {
+        throw StockHistoryError.invalid("货物行区域为空或重叠")
+      }
+      for band in bands {
+        let parts = left.filter { $0.box.midY >= band.minY && $0.box.midY < band.maxY }
+        guard !parts.isEmpty else {
+          throw StockHistoryError.invalid("货物行未识别到名称，请核对原图第 \(Int(band.minY)) 像素处")
+        }
+        let anchors = parts.reduce(0) { count, cell in
+          count + codeExpression.numberOfMatches(in: compact(cell.text),
+            range: NSRange(location: 0, length: (compact(cell.text) as NSString).length))
+        }
+        guard anchors <= 1 else {
+          throw StockHistoryError.invalid("一个图像行识别出多个货号，不能确认行位置")
+        }
+        // 行身份由原图背景分隔定位。缺少或读错货号仍保留这一行，交给档案匹配与人工确认。
+        let nameLeft = parts.first(where: {
+          compact($0.text).range(of: code, options: .regularExpression) != nil
+        })?.box.minX
+        names.append(parts.filter { nameLeft == nil || $0.box.maxX >= nameLeft! - $0.box.height * 0.25 })
+      }
+      guard left.allSatisfy({ cell in bands.filter {
+        cell.box.midY >= $0.minY && cell.box.midY < $0.maxY
+      }.count == 1 }) else {
+        throw StockHistoryError.invalid("货物文字超出已定位的行区域")
+      }
+    } else { for cell in left {
       let anchors = codeExpression.matches(in: compact(cell.text),
         range: NSRange(location: 0, length: (compact(cell.text) as NSString).length))
       guard anchors.count <= 1 else {
@@ -436,17 +562,18 @@ enum StockTableParser {
         names.append(current.filter { $0.box.maxX >= nameLeft })
         current = []
       }
-    }
+    } }
     StockDiagnostics.log("货物行划分 top=\(top) bottom=\(footer) anchors=\(names.count) trailing=\(current.suffix(12).map { "\($0.text)@\($0.box)" })")
     guard !names.isEmpty, current.isEmpty else {
       throw StockHistoryError.invalid("货物编码识别不完整，无法可靠划分货物行，请核对原始长图")
     }
     return try names.enumerated().map { index, parts in
       // 左右两列独立垂直居中，库存可能比品名更高；用相邻名称块间的空白中点划分行。
-      let start = index == 0 ? top :
+      let start = rowBands?[index].minY ?? (index == 0 ? top :
         (names[index - 1].map { $0.box.maxY }.max()! + parts.map { $0.box.minY }.min()!) / 2
-      let end = index + 1 < names.count ?
-        (parts.map { $0.box.maxY }.max()! + names[index + 1].map { $0.box.minY }.min()!) / 2 : footer
+      )
+      let end = rowBands?[index].maxY ?? (index + 1 < names.count ?
+        (parts.map { $0.box.maxY }.max()! + names[index + 1].map { $0.box.minY }.min()!) / 2 : footer)
       var nameParts = parts
       let name = parts.map(\.text).joined(separator: "\n")
       let missingSpecification = name.range(of: "饮料|饮品|咖啡豆|调味酱|蛋糕|面包", options: .regularExpression) != nil &&
@@ -487,7 +614,9 @@ enum StockTableParser {
         StockOCRRefinement.canonicalProductCode($0.text) ?? $0.text
       }.joined(separator: "\n"), inventory],
         confidence: (nameParts + stocks).map(\.confidence).min()!,
-        inventoryUncertain: stocks.isEmpty || (!blankInventory(inventory) && inventory.range(of: "[0-9]", options: .regularExpression) == nil))
+        inventoryUncertain: stocks.isEmpty || (!blankInventory(inventory) && inventory.range(of: "[0-9]", options: .regularExpression) == nil),
+        sourceTop: Double(start), sourceBottom: Double(end < .greatestFiniteMagnitude ? end :
+          (nameParts + stocks).map { $0.box.maxY }.max()! + 12))
     }
   }
 }
@@ -1026,7 +1155,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 16
+  static let recognitionRevision = 18
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1322,6 +1451,51 @@ enum StockHistoryProcessor {
       width < 600 ? min(4, Int(ceil(828 / Double(width)))) : 1)
   }
 
+  /// 固定版式交替灰白行；取每条扫描线的背景中位数，避免文字、小图与水印决定行身份。
+  /// 连续数个像素确认背景切换，排除细分隔线和 JPEG 边缘噪声。业务数值从不参与定位。
+  static func visualGoodsRows(_ image: CGImage, top: CGFloat, bottom: CGFloat) throws -> [CGRect] {
+    guard top.isFinite, bottom.isFinite, top >= 0, bottom > top, bottom <= CGFloat(image.height) else {
+      throw StockHistoryError.invalid("货物图像区域无效")
+    }
+    var pixels = [UInt8](repeating: 0, count: image.width * image.height)
+    try pixels.withUnsafeMutableBytes { buffer in
+      guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+        bitsPerComponent: 8, bytesPerRow: image.width, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else {
+        throw StockHistoryError.invalid("无法读取货物行背景")
+      }
+      context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    }
+    let first = Int(top.rounded(.up)), last = Int(bottom.rounded(.down))
+    let hold = max(2, image.width / 160)
+    guard last - first > hold else { throw StockHistoryError.invalid("货物正文高度不足") }
+    func white(_ y: Int) -> Bool {
+      var samples = (0..<64).map { index -> UInt8 in
+        let x = min(image.width - 1, max(0, Int(Double(image.width) * (0.01 + Double(index) * 0.98 / 63))))
+        return pixels[y * image.width + x]
+      }
+      samples.sort()
+      return samples[32] > 250
+    }
+    var active = white(first), candidateStart = first
+    var cuts = [first]
+    for y in (first + 1)..<last {
+      if white(y) == active { candidateStart = y + 1 }
+      else if y - candidateStart + 1 >= hold {
+        cuts.append(candidateStart)
+        active.toggle()
+        candidateStart = y + 1
+      }
+    }
+    cuts.append(last)
+    // 表头到第一件货物之间有留白；它没有达到一个货物行的最小高度，不作为货物。
+    let minimumHeight = max(12, image.width / 25)
+    let bands = zip(cuts, cuts.dropFirst()).filter { pair in pair.1 - pair.0 >= minimumHeight }.map { pair in
+      CGRect(x: 0, y: pair.0, width: image.width, height: pair.1 - pair.0)
+    }
+    guard !bands.isEmpty else { throw StockHistoryError.invalid("无法定位货物背景行，请核对原始截图") }
+    return bands
+  }
+
   static func enlargedOCRTile(_ image: CGImage, scale: Int) throws -> CGImage {
     guard (1...4).contains(scale) else { throw StockHistoryError.invalid("识别放大倍数无效") }
     if scale == 1 { return image }
@@ -1509,11 +1683,16 @@ enum StockHistoryProcessor {
         }
       }
     }
+    cells = try refine(cells, original: cg, clean: recognitionImage, columnX: columnX, progress: progress)
+    // 通用复核可能首次发现货号；货号完整性复核必须是进入行划分前的最后一步。
     cells = try recoverProductCodes(cells, original: cg, clean: recognitionImage,
       columnX: columnX, progress: progress)
-    cells = try refine(cells, original: cg, clean: recognitionImage, columnX: columnX, progress: progress)
     StockDiagnostics.log("复核完成 cells=\(cells.count)")
-    let goods = try StockTableParser.rows(cells, retryName: { start, end, left in
+    let goodsBottom = StockTableParser.goodsBottom(cells, below: max(headers.name.box.maxY, header.box.maxY),
+      imageBottom: CGFloat(cg.height))
+    let rowBands = try visualGoodsRows(cg, top: max(headers.name.box.maxY, header.box.maxY), bottom: goodsBottom)
+    StockDiagnostics.log("图像定位货物行=\(rowBands.count)")
+    let goods = try StockTableParser.rows(cells, rowBands: rowBands, retryName: { start, end, left in
       progress("正在复核名称和规格")
       let top = max(0, start.rounded(.down))
       let bottom = min(CGFloat(cg.height), end.rounded(.up))
@@ -1528,7 +1707,7 @@ enum StockHistoryProcessor {
         min(raw.map(\.confidence).min()!, clean.map(\.confidence).min()!) >= 0.8 else { return nil }
       let confidence = min(raw.map(\.confidence).min()!, clean.map(\.confidence).min()!)
       return raw.map { StockOCRCell(text: $0.text, confidence: min($0.confidence, confidence), box: $0.box) }
-    }) { start, end in
+    }, retryInventory: { start, end in
       progress("正在放大复核未识别的库存行")
       let crop = CGRect(x: CGFloat(columnX), y: max(0, start.rounded(.down)),
         width: CGFloat(cg.width - columnX),
@@ -1545,7 +1724,7 @@ enum StockHistoryProcessor {
       }
       // 识别任务成功但数量不确定：保留实际 OCR 文本并标记待确认，允许部分盘点单保存。
       return readings.max { $0.count < $1.count }!
-    }
+    })
     if let marker = cells.filter({
       StockOCRRefinement.isPreparedSectionLabel($0.text)
     }).min(by: { $0.box.minY < $1.box.minY }) {
@@ -2199,6 +2378,45 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
             try StockHistoryStorage.save(table.json())
             value = try table.json()
           }
+        case "loadProducts":
+          let url = try StockHistoryStorage.root().appendingPathComponent("products.json")
+          var snapshot = try StockProductStorage.read(url)
+          if let arguments = call.arguments {
+            guard let seed = arguments as? [String: Any], let version = seed["seedVersion"] as? String,
+              let products = seed["seedProducts"] as? [[String: Any]] else {
+              throw StockHistoryError.invalid("内置货物档案参数无效")
+            }
+            let initialized = try StockProductStorage.applying(products, version: version, to: snapshot)
+            if initialized.appliedSeeds != snapshot.appliedSeeds {
+              try StockProductStorage.write(initialized, to: url)
+            }
+            snapshot = initialized
+          }
+          value = try StockProductStorage.json(snapshot.products)
+        case "saveProducts":
+          guard let json = call.arguments as? String,
+            let data = json.data(using: .utf8),
+            let products = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw StockHistoryError.invalid("货物档案必须为 JSON 列表")
+          }
+          try StockProductStorage.validate(products)
+          let url = try StockHistoryStorage.root().appendingPathComponent("products.json")
+          var snapshot = try StockProductStorage.read(url)
+          snapshot.products = products
+          try StockProductStorage.write(snapshot, to: url)
+          value = nil
+        case "imageRegion":
+          guard let arguments = call.arguments as? [String: Any], let id = arguments["id"] as? String,
+            let top = arguments["top"] as? Double, let bottom = arguments["bottom"] as? Double,
+            top.isFinite, bottom.isFinite, top >= 0, bottom > top,
+            let source = UIImage(data: try StockHistoryStorage.image(id))?.cgImage,
+            top < Double(source.height),
+            let region = source.cropping(to: CGRect(x: 0, y: floor(top), width: Double(source.width),
+              height: min(Double(source.height), ceil(bottom)) - floor(top))),
+            let png = UIImage(cgImage: region).pngData() else {
+            throw StockHistoryError.invalid("无法读取当前行原图")
+          }
+          value = FlutterStandardTypedData(bytes: png)
         case "list": value = try StockHistoryStorage.list()
         case "reorder":
           guard let ids = call.arguments as? [String] else { throw StockHistoryError.invalid("排序参数无效") }

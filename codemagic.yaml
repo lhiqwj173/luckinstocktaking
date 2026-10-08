@@ -14,13 +14,15 @@ workflows:
         script: |
           flutter analyze
           flutter test -j 1
-      - name: Run iOS native regression tests
+      - name: Build iOS simulator app
+        script: flutter build ios --simulator --debug
+      - name: Run deterministic iOS rule tests
         script: |
           set -euo pipefail
-          flutter build ios --simulator --debug
           simulator_id="$(xcrun simctl list devices available -j | ruby -rjson -e 'device = JSON.parse(STDIN.read).fetch("devices").values.flatten.find { |item| item.fetch("name").start_with?("iPhone") && item.fetch("isAvailable") }; abort "No available iPhone simulator" unless device; puts device.fetch("udid")')"
           mkdir -p "$CM_BUILD_DIR/build/ios/test-results"
           xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
+            -only-testing:RunnerTests/RunnerTests \
             -destination "platform=iOS Simulator,id=$simulator_id" -parallel-testing-enabled NO \
             -resultBundlePath "$CM_BUILD_DIR/build/ios/test-results/RunnerTests.xcresult" \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$CM_BUILD_DIR/build/ios/test-results/native-regression.log"
@@ -44,5 +46,31 @@ workflows:
     artifacts:
       - build/ios/ipa/luckinstocktaking-unsigned.ipa
       - /tmp/xcodebuild_logs/*.log
+      - build/ios/test-results/*.xcresult
+      - build/ios/test-results/*.log
+  vision-acceptance:
+    name: Vision original PNG acceptance (manual)
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Install dependencies
+        script: flutter pub get
+      - name: Build iOS simulator app
+        script: flutter build ios --simulator --debug
+      - name: Validate Vision on representative original PNG screenshots
+        script: |
+          set -euo pipefail
+          simulator_id="$(xcrun simctl list devices available -j | ruby -rjson -e 'device = JSON.parse(STDIN.read).fetch("devices").values.flatten.find { |item| item.fetch("name").start_with?("iPhone") && item.fetch("isAvailable") }; abort "No available iPhone simulator" unless device; puts device.fetch("udid")')"
+          mkdir -p "$CM_BUILD_DIR/build/ios/test-results"
+          xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
+            -only-testing:RunnerTests/VisionAcceptanceTests \
+            -destination "platform=iOS Simulator,id=$simulator_id" -parallel-testing-enabled NO \
+            -resultBundlePath "$CM_BUILD_DIR/build/ios/test-results/VisionAcceptance.xcresult" \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$CM_BUILD_DIR/build/ios/test-results/vision-acceptance.log"
+    artifacts:
       - build/ios/test-results/*.xcresult
       - build/ios/test-results/*.log

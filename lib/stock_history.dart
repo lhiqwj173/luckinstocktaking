@@ -7,15 +7,87 @@ import 'stock_inventory.dart';
 
 class StockLine {
   StockLine({
-    required this.cells,
+    required List<String> cells,
     required this.confidence,
     this.inventoryUncertain = false,
     this.category = 'goods',
-  });
+    this.productId,
+    this.identityConfirmed = false,
+    this.inventoryConfirmed = false,
+    List<String>? sourceCells,
+    this.sourceTop,
+    this.sourceBottom,
+  }) : cells = List.unmodifiable(cells),
+       sourceCells = List.unmodifiable(sourceCells ?? cells) {
+    if (this.sourceCells.length != cells.length ||
+        (identityConfirmed && (productId == null || productId!.isEmpty)) ||
+        (sourceTop == null) != (sourceBottom == null) ||
+        (sourceTop != null &&
+            (!sourceTop!.isFinite ||
+                !sourceBottom!.isFinite ||
+                sourceTop! < 0 ||
+                sourceBottom! <= sourceTop!))) {
+      throw const FormatException('盘点行确认状态或原图位置无效');
+    }
+  }
   final List<String> cells;
   final double confidence;
   final bool inventoryUncertain;
   final String category;
+  final String? productId;
+  final bool identityConfirmed;
+  final bool inventoryConfirmed;
+  final List<String> sourceCells;
+  final double? sourceTop;
+  final double? sourceBottom;
+  bool get ready =>
+      identityConfirmed &&
+      productId != null &&
+      inventoryConfirmed &&
+      !inventory.needsReview &&
+      inventory.reviewStatus != '总库存与冷藏、冷冻合计不一致';
+
+  StockLine confirmed({
+    required List<String> cells,
+    required String productId,
+    required List<String> allowedUnits,
+  }) {
+    if (cells.length != 2 || allowedUnits.isEmpty) {
+      throw const FormatException('确认盘点行须提供名称、库存及允许单位');
+    }
+    final parsed = StockInventory.parse(cells[1]);
+    if (parsed.needsReview ||
+        parsed.reviewStatus == '总库存与冷藏、冷冻合计不一致' ||
+        parsed.parts.values
+            .expand((part) => part.amounts.keys)
+            .any((unit) => !allowedUnits.contains(unit))) {
+      throw const FormatException('库存格式、单位或分区合计有误');
+    }
+    return StockLine(
+      cells: cells,
+      confidence: confidence,
+      category: category,
+      productId: productId,
+      identityConfirmed: true,
+      inventoryConfirmed: true,
+      sourceCells: sourceCells,
+      sourceTop: sourceTop,
+      sourceBottom: sourceBottom,
+    );
+  }
+
+  StockLine invalidateIdentity() => StockLine(
+    cells: cells,
+    confidence: confidence,
+    category: category,
+    productId: productId,
+    identityConfirmed: false,
+    inventoryConfirmed: inventoryConfirmed,
+    inventoryUncertain: inventoryUncertain,
+    sourceCells: sourceCells,
+    sourceTop: sourceTop,
+    sourceBottom: sourceBottom,
+  );
   bool get isPrepared => category == 'prepared';
   String get categoryLabel => isPrepared ? '预制物料' : '货物';
   StockInventory get inventory =>
@@ -98,6 +170,12 @@ class StockLine {
       confidence: confidence,
       inventoryUncertain: (json['inventoryUncertain'] as bool?) ?? false,
       category: _category(json['category']),
+      productId: json['productId'] as String?,
+      identityConfirmed: (json['identityConfirmed'] as bool?) ?? false,
+      inventoryConfirmed: (json['inventoryConfirmed'] as bool?) ?? false,
+      sourceCells: (json['sourceCells'] as List?)?.cast<String>(),
+      sourceTop: (json['sourceTop'] as num?)?.toDouble(),
+      sourceBottom: (json['sourceBottom'] as num?)?.toDouble(),
     );
   }
   Map<String, dynamic> toJson() => {
@@ -105,6 +183,12 @@ class StockLine {
     'confidence': confidence,
     'inventoryUncertain': inventoryUncertain,
     'category': category,
+    'productId': productId,
+    'identityConfirmed': identityConfirmed,
+    'inventoryConfirmed': inventoryConfirmed,
+    'sourceCells': sourceCells,
+    if (sourceTop != null) 'sourceTop': sourceTop,
+    if (sourceBottom != null) 'sourceBottom': sourceBottom,
   };
 
   static String _category(dynamic value) {
@@ -183,7 +267,7 @@ class StockDocument {
     createdAt: createdAt,
     imageName: imageName,
     lines: lines,
-    reviewed: true,
+    reviewed: lines.every((line) => line.ready),
     schemaVersion: schemaVersion,
     recognitionRevision: recognitionRevision,
   );
@@ -306,6 +390,19 @@ class StockHistoryStore {
   Future<Uint8List> image(StockDocument document) async {
     final bytes = await channel.invokeMethod<Uint8List>('image', document.id);
     if (bytes == null || bytes.isEmpty) throw StateError('无法读取盘点单原图');
+    return bytes;
+  }
+
+  Future<Uint8List> rowImage(StockDocument document, StockLine line) async {
+    if (line.sourceTop == null || line.sourceBottom == null) {
+      throw StateError('该历史记录没有行位置，请使用长图对照');
+    }
+    final bytes = await channel.invokeMethod<Uint8List>('imageRegion', {
+      'id': document.id,
+      'top': line.sourceTop,
+      'bottom': line.sourceBottom,
+    });
+    if (bytes == null || bytes.isEmpty) throw StateError('无法读取当前行原图');
     return bytes;
   }
 

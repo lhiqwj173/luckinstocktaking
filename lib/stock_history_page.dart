@@ -6,6 +6,8 @@ import 'stock_history.dart';
 import 'stock_inventory_view.dart';
 import 'stock_comparison.dart';
 import 'stock_comparison_page.dart';
+import 'stock_product.dart';
+import 'stock_review_dialog.dart';
 
 const historyInstructions =
     '1. 在瑞幸盘打开旧盘点单，使用系统录屏，从顶部缓慢滚动到底。\n'
@@ -530,6 +532,9 @@ class StockDocumentPage extends StatefulWidget {
 
 class _StockDocumentPageState extends State<StockDocumentPage> {
   final _store = StockHistoryStore();
+  final _productStore = StockProductStore();
+  List<StockProduct> _products = [];
+  bool _productsLoaded = false;
   final _query = TextEditingController();
   late final TextEditingController _title;
   late List<StockLine> _lines;
@@ -540,6 +545,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   bool _saving = false;
   bool _sharing = false;
   bool _showImage = false;
+  bool _onlyPending = false;
 
   @override
   void initState() {
@@ -555,12 +561,20 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
     try {
       final images = await _store.imageTiles(_document);
       if (mounted) setState(() => _images = images);
+      final products = await _productStore.load();
+      if (mounted) {
+        setState(() {
+          _products = products;
+          _productsLoaded = true;
+        });
+      }
       final table = await _store.table(_document);
       if (mounted) {
         setState(() {
           if (_title.text == _document.title) _title.text = table.title;
           _document = table;
-          _lines = [...table.lines];
+          _lines = _reconcileProducts(table.lines, products);
+          _products = products;
         });
       }
     } on PlatformException catch (error) {
@@ -622,7 +636,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
 
   /// 导出当前页面所见，包括尚未点「保存修改」的校对改动。
   Future<void> _exportExcel() => _run(() async {
-    final table = buildStockExportTable(_title.text, _lines);
+    final table = buildConfirmedStockExportTable(_title.text, _lines);
     await _store.shareBytes(
       name: '${sanitizeFileName(_title.text)}.xlsx',
       bytes: Uint8List.fromList(encodeStockWorkbook(table)),
@@ -663,27 +677,67 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   }
 
   Future<void> _edit(int index) async {
-    final cells = await showDialog<List<String>>(
-      context: context,
-      builder: (context) => _EditLineDialog(
-        name: _lines[index].cells[0],
-        inventory: _lines[index].cells[1],
-      ),
-    );
-    if (cells == null || !mounted) return;
-    if (cells.first.isEmpty) {
-      setState(() => _error = '货物名称不能为空，请重新校对');
-      return;
-    }
-    setState(() {
-      _lines[index] = StockLine(
-        cells: cells,
-        confidence: 1,
-        category: _lines[index].category,
+    await _run(() async {
+      final line = _lines[index];
+      final images = line.sourceTop != null && line.sourceBottom != null
+          ? [await _store.rowImage(_document, line)]
+          : _images!;
+      if (!mounted) return;
+      final updated = await showDialog<StockLine>(
+        context: context,
+        builder: (_) => StockReviewDialog(
+          line: line,
+          products: _products,
+          images: images,
+          onCreate: (product) async {
+            final next = [..._products, product];
+            await _productStore.save(next);
+            if (mounted) setState(() => _products = next);
+          },
+        ),
       );
-      _error = null;
+      if (updated != null && mounted) setState(() => _lines[index] = updated);
     });
   }
+
+  Future<void> _manageProducts() async {
+    await Navigator.of(
+      context,
+    ).push<void>(MaterialPageRoute(builder: (_) => const StockProductPage()));
+    if (!mounted) return;
+    setState(() => _productsLoaded = false);
+    await _run(() async {
+      final products = await _productStore.load();
+      if (mounted) {
+        setState(() {
+          _products = products;
+          _productsLoaded = true;
+          _lines = _reconcileProducts(_lines, products);
+        });
+      }
+    });
+  }
+
+  List<StockLine> _reconcileProducts(
+    List<StockLine> lines,
+    List<StockProduct> products,
+  ) => lines.map((line) {
+    if (!line.identityConfirmed) return line;
+    final matching = products
+        .where(
+          (product) =>
+              product.id == line.productId &&
+              product.category == line.category &&
+              product.display == line.cells[0],
+        )
+        .toList();
+    final compatible =
+        matching.length == 1 &&
+        line.inventory.parts.values
+            .expand((part) => part.amounts.keys)
+            .every(matching.single.units.contains);
+    return compatible ? line : line.invalidateIdentity();
+  }).toList();
 
   @override
   Widget build(BuildContext context) {
@@ -692,9 +746,11 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
         .asMap()
         .entries
         .where(
-          (entry) => entry.value.text.toLowerCase().contains(
-            _query.text.trim().toLowerCase(),
-          ),
+          (entry) =>
+              entry.value.text.toLowerCase().contains(
+                _query.text.trim().toLowerCase(),
+              ) &&
+              (!_onlyPending || !entry.value.ready),
         )
         .toList();
     return PopScope(
@@ -717,6 +773,13 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
           ),
           actions: [
             IconButton(
+              onPressed: _saving || _preparing || _sharing
+                  ? null
+                  : _manageProducts,
+              icon: const Icon(Icons.inventory_2_outlined),
+              tooltip: '盘点货物档案',
+            ),
+            IconButton(
               onPressed: () => setState(() => _showImage = !_showImage),
               icon: Icon(
                 _showImage ? Icons.table_rows_outlined : Icons.image_outlined,
@@ -733,7 +796,11 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                   '导出 Excel',
                   // 货物表整理完成前导不出两列数据，长图未就绪时也无处可分享。
                   enabled:
-                      _document.schemaVersion == 2 && !_preparing && !_saving,
+                      _document.schemaVersion == 2 &&
+                      !_preparing &&
+                      !_saving &&
+                      !_sharing &&
+                      _lines.every((line) => line.ready),
                 ),
                 _shareItem(
                   _ShareAction.image,
@@ -757,7 +824,13 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                   ? null
                   : _save,
               icon: const Icon(Icons.save_outlined),
-              label: Text(_saving ? '正在保存…' : '保存修改并标记已校对'),
+              label: Text(
+                _saving
+                    ? '正在保存…'
+                    : _lines.every((line) => line.ready)
+                    ? '保存已确认盘点单'
+                    : '保存草稿',
+              ),
             ),
           ),
         ),
@@ -771,7 +844,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
             const SizedBox(height: 12),
             Text(
               _document.schemaVersion == 2
-                  ? '识别结果已保存，可直接搜索查询。发现错误时点击铅笔修改，也可查看原图对照。'
+                  ? '已确认 ${_lines.where((line) => line.ready).length}/${_lines.length} 行。点击铅笔，分别对照原图确认货物与库存。未确认可保存草稿。'
                   : '原始长图已保留，货物表尚未整理完成。可切换查看长图核对。',
             ),
             if (_error != null) ...[
@@ -833,6 +906,23 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                 ),
             ],
             if (!_showImage && !_preparing && _document.schemaVersion == 2) ...[
+              SwitchListTile(
+                value: _onlyPending,
+                onChanged: (value) => setState(() => _onlyPending = value),
+                title: const Text('只看待确认行'),
+              ),
+              OutlinedButton.icon(
+                onPressed:
+                    _saving ||
+                        _sharing ||
+                        _images == null ||
+                        !_productsLoaded ||
+                        _lines.every((line) => line.ready)
+                    ? null
+                    : () => _edit(_lines.indexWhere((line) => !line.ready)),
+                icon: const Icon(Icons.fact_check_outlined),
+                label: const Text('校对下一条待确认'),
+              ),
               TextField(
                 controller: _query,
                 onChanged: (_) => setState(() {}),
@@ -894,6 +984,14 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                                     style: theme.textTheme.labelSmall,
                                   ),
                                 SelectableText(entry.value.cells[0]),
+                                Text(
+                                  entry.value.ready ? '已确认' : '货物或库存待确认',
+                                  style: TextStyle(
+                                    color: entry.value.ready
+                                        ? null
+                                        : theme.colorScheme.error,
+                                  ),
+                                ),
                                 if (entry.value.reviewIssue != null &&
                                     entry.value.reviewIssue != '库存数字待确认')
                                   Text(
@@ -916,7 +1014,11 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                                   ),
                                 ),
                                 IconButton(
-                                  onPressed: _saving
+                                  onPressed:
+                                      _saving ||
+                                          _sharing ||
+                                          _images == null ||
+                                          !_productsLoaded
                                       ? null
                                       : () => _edit(entry.key),
                                   icon: const Icon(Icons.edit_outlined),
@@ -935,65 +1037,4 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
       ),
     );
   }
-}
-
-/// 控制器必须随对话框一起释放：showDialog 返回时关闭动画尚未结束，
-/// 在调用方释放会让仍在重建的 TextField 拿到已释放的控制器。
-class _EditLineDialog extends StatefulWidget {
-  const _EditLineDialog({required this.name, required this.inventory});
-
-  final String name;
-  final String inventory;
-
-  @override
-  State<_EditLineDialog> createState() => _EditLineDialogState();
-}
-
-class _EditLineDialogState extends State<_EditLineDialog> {
-  late final TextEditingController _name = TextEditingController(
-    text: widget.name,
-  );
-  late final TextEditingController _inventory = TextEditingController(
-    text: widget.inventory,
-  );
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _inventory.dispose();
-    super.dispose();
-  }
-
-  void _update() =>
-      Navigator.pop(context, [_name.text.trim(), _inventory.text.trim()]);
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('校对货物'),
-    content: SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _name,
-            maxLines: 4,
-            decoration: const InputDecoration(labelText: '货物规格名称'),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _inventory,
-            maxLines: 4,
-            decoration: const InputDecoration(labelText: '实盘总库存'),
-          ),
-        ],
-      ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('取消'),
-      ),
-      FilledButton(onPressed: _update, child: const Text('更新')),
-    ],
-  );
 }

@@ -123,6 +123,17 @@ StockExportTable buildStockExportTable(String title, List<StockLine> lines) {
   );
 }
 
+/// 正式导出入口；草稿解析函数仍可用于预览和规则验证。
+StockExportTable buildConfirmedStockExportTable(
+  String title,
+  List<StockLine> lines,
+) {
+  if (lines.isEmpty || lines.any((line) => !line.ready)) {
+    throw const FormatException('请先逐行确认货物身份及库存，再导出已确认盘点单');
+  }
+  return buildStockExportTable(title, lines);
+}
+
 /// 一列数值对应唯一的「分区 + 单位」组合，表头只是它的展示形式。
 class _NumericColumn {
   const _NumericColumn(this.section, this.unit);
@@ -188,7 +199,7 @@ List<StockExportCell> _buildRow(
     if (includeReview)
       StockExportText(issues.isEmpty ? '已解析' : issues.join('；')),
     // 原始识别文本是校对依据：即使数值齐全也一并保留，识别有误时能追溯原文。
-    StockExportText(line.cells[1]),
+    StockExportText(line.sourceCells[1]),
   ];
 }
 

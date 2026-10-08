@@ -15,6 +15,9 @@ StockLine line(String code, String inventory, {bool uncertain = false}) =>
       cells: ['测试货物\n$code', inventory],
       confidence: .9,
       inventoryUncertain: uncertain,
+      productId: code,
+      identityConfirmed: true,
+      inventoryConfirmed: true,
     );
 StockDocument document(String prefix, List<StockLine> lines) => StockDocument(
   id: '${prefix}2345678-1234-1234-1234-123456789abc',

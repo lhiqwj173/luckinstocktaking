@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:async';
-import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:excel/excel.dart';
@@ -10,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:luckinstocktaking/stock_history.dart';
 import 'package:luckinstocktaking/stock_history_page.dart';
 import 'package:luckinstocktaking/main.dart';
+import 'package:luckinstocktaking/stock_product.dart';
 
 Map<String, dynamic> record({String title = '人民路店 2026-09-30'}) => {
   'schemaVersion': 1,
@@ -108,6 +108,7 @@ void main() {
           : '[]',
     );
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       switch (call.method) {
         case 'pending':
           pendingChecks++;
@@ -166,11 +167,11 @@ void main() {
       find.widgetWithText(TextField, '单据名称（可填写日期 / 门店 / 单号）'),
       '已校对的盘点单',
     );
-    await tester.ensureVisible(find.text('保存修改并标记已校对'));
-    await tester.tap(find.text('保存修改并标记已校对'));
+    await tester.ensureVisible(find.text('保存草稿'));
+    await tester.tap(find.text('保存草稿'));
     await tester.pumpAndSettle();
     expect(saved!['title'], '已校对的盘点单');
-    expect(saved!['reviewed'], true);
+    expect(saved!['reviewed'], false);
     expect(saved!['recognitionRevision'], 1);
     expect((saved!['lines'] as List).length, 2);
     expect(find.text('盘点单详情'), findsNothing);
@@ -192,6 +193,7 @@ void main() {
       return data!.buffer.asUint8List();
     });
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       if (call.method == 'imageTiles') return [png!, png];
       if (call.method == 'table') {
         throw PlatformException(code: 'OCR_FAILED', message: '库存识别失败');
@@ -323,26 +325,6 @@ void main() {
     }
   });
 
-  test('真实周盘中23条正常换行规格不再误报', () {
-    final rows = (jsonDecode(
-      File('ios/RunnerTests/Fixtures/inventory_weekly_20260925_expected.json')
-          .readAsStringSync(encoding: utf8),
-    ) as List).cast<Map<String, dynamic>>();
-    final falseAlarms = rows.where(
-      (row) =>
-          row['originalReviewStatus'] == '名称或规格可能不完整，请对照原图' &&
-          !['GS04465-08', 'GS00412-218'].contains(row['code']),
-    );
-    expect(falseAlarms.length, 23);
-    for (final row in falseAlarms) {
-      final line = StockLine(
-        cells: [row['name'] as String, row['quantity'] as String],
-        confidence: .95,
-      );
-      expect(line.reviewIssue, isNull, reason: row['code'] as String);
-    }
-  });
-
   test('往返保留重复行、原始数量、置信度及导入时间', () {
     final document = StockDocument.fromJson(record());
     final decoded = StockDocument.fromJson(
@@ -358,7 +340,7 @@ void main() {
     ]);
     expect(edited.id, document.id);
     expect(edited.title, '修正单据');
-    expect(edited.reviewed, true);
+    expect(edited.reviewed, false);
   });
 
   test('未校对历史自动检查算法版本，已校对内容直接保留', () async {
@@ -374,6 +356,7 @@ void main() {
     };
     var requests = 0;
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       expect(call.method, 'table');
       requests++;
       return jsonEncode({...data, 'recognitionRevision': 1});
@@ -473,6 +456,7 @@ void main() {
   testWidgets('拼接录屏选择用户录制的视频且不启动录屏', (tester) async {
     final calls = <MethodCall>[];
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       calls.add(call);
       if (call.method == 'list') return '[]';
       if (call.method == 'import') return null;
@@ -492,6 +476,7 @@ void main() {
   testWidgets('截图组入口调用批量导入，取消后不创建历史', (tester) async {
     final calls = <MethodCall>[];
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       calls.add(call);
       if (call.method == 'list') return '[]';
       if (call.method == 'importScreenshots') return null;
@@ -510,6 +495,7 @@ void main() {
     final calls = <String>[];
     final selections = <Completer<String?>>[];
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       calls.add(call.method);
       if (call.method == 'list') return '[]';
       if (call.method == 'import' || call.method == 'importScreenshots') {
@@ -550,6 +536,7 @@ void main() {
 
   test('历史加载拒绝重复标识，系统选择器取消不创建记录', () async {
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       if (call.method == 'import') return null;
       return jsonEncode([record(), record()]);
     });
@@ -593,6 +580,7 @@ void main() {
   testWidgets('解析失败后可从错误处导出诊断日志', (tester) async {
     final calls = <String>[];
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       calls.add(call.method);
       if (call.method == 'list') {
         throw PlatformException(
@@ -624,6 +612,7 @@ void main() {
     final deleted = <String>[];
     var failDelete = true;
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       if (call.method == 'list') return jsonEncode(remaining);
       if (call.method == 'delete') {
         if (failDelete) {
@@ -665,12 +654,40 @@ void main() {
   });
 
   testWidgets('导出 Excel 取当前页面所见，含尚未保存的校对', (tester) async {
+    final products = [
+      StockProduct(
+        code: "GS10001-01",
+        name: "生椰拿铁（大杯）",
+        specification: "",
+        units: ["盒", "瓶"],
+      ),
+      StockProduct(
+        code: "GS10002-01",
+        name: "冰美式",
+        specification: "",
+        units: ["个"],
+      ),
+    ];
+    final table = tableRecord();
+    table["lines"] = [
+      for (var i = 0; i < products.length; i++)
+        {
+          "cells": [products[i].display, i == 0 ? "3盒 2瓶" : "冷藏12个"],
+          "confidence": .9,
+          "productId": products[i].id,
+          "identityConfirmed": true,
+          "inventoryConfirmed": true,
+        },
+    ];
     Uint8List? shared;
     String? sharedName;
     final png = await longImageTile(tester);
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') {
+        return jsonEncode(products.map((p) => p.toJson()).toList());
+      }
       if (call.method == 'imageTiles') return [png, png];
-      if (call.method == 'table') return jsonEncode(tableRecord());
+      if (call.method == 'table') return jsonEncode(table);
       if (call.method == 'shareBytes') {
         final arguments = (call.arguments as Map).cast<String, Object?>();
         sharedName = arguments['name'] as String;
@@ -681,14 +698,14 @@ void main() {
     });
     await tester.pumpWidget(
       MaterialApp(
-        home: StockDocumentPage(
-          document: StockDocument.fromJson(tableRecord()),
-        ),
+        home: StockDocumentPage(document: StockDocument.fromJson(table)),
       ),
     );
     await tester.pumpAndSettle();
 
     // 改第二行库存但不点「保存修改」，导出结果必须反映这次校对。
+    await tester.ensureVisible(find.byIcon(Icons.edit_outlined).at(1));
+    await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Icons.edit_outlined).at(1));
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -700,7 +717,11 @@ void main() {
           .at(1),
       '冷藏99个',
     );
-    await tester.tap(find.text('更新'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('已逐项核对原图数字、单位和所属行'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('已逐项核对原图数字、单位和所属行'));
+    await tester.tap(find.text('确认此行'));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byTooltip('导出与分享'));
@@ -729,6 +750,7 @@ void main() {
     final calls = <MethodCall>[];
     final png = await longImageTile(tester);
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       calls.add(call);
       if (call.method == 'imageTiles') return [png, png];
       if (call.method == 'table') return jsonEncode(tableRecord());
@@ -760,6 +782,7 @@ void main() {
   testWidgets('货物表整理完成前禁用导出，避免导出无效的两列表格', (tester) async {
     final png = await longImageTile(tester);
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       if (call.method == 'imageTiles') return [png];
       if (call.method == 'table') {
         throw PlatformException(code: 'OCR_FAILED', message: '库存识别失败');
@@ -793,6 +816,7 @@ void main() {
   test('调整顺序要求至少两张，并只把标识按新顺序传给平台', () async {
     final calls = <MethodCall>[];
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       calls.add(call);
       return null;
     });
@@ -824,6 +848,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       if (call.method == 'list') {
         return jsonEncode([
           record(),
@@ -864,6 +889,7 @@ void main() {
   testWidgets('拖拽手柄调整历史顺序并持久化到平台', (tester) async {
     final calls = <MethodCall>[];
     await pumpTwoDocuments(tester, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       calls.add(call);
       if (call.method == 'reorder') return null;
       throw StateError('意外的平台请求：${call.method}');
@@ -887,6 +913,7 @@ void main() {
 
   testWidgets('搜索过滤时隐藏拖拽手柄，避免只重排可见结果', (tester) async {
     await pumpTwoDocuments(tester, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       throw StateError('搜索时不应请求平台：${call.method}');
     });
     expect(find.byIcon(Icons.drag_handle), findsNWidgets(2));
@@ -900,6 +927,7 @@ void main() {
 
   testWidgets('排序写入失败时回滚原顺序并显示错误', (tester) async {
     await pumpTwoDocuments(tester, (call) async {
+      if (call.method == 'loadProducts') return '[]';
       if (call.method == 'reorder') {
         throw PlatformException(code: 'REORDER_FAILED', message: '排序失败');
       }

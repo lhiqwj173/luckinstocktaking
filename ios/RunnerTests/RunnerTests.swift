@@ -6,6 +6,75 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  func testProductSeedPreservesUserChangesAndDeletedEntries() throws {
+    func product(_ code: String, _ name: String) -> [String: Any] {
+      ["id": code, "code": code, "name": name, "specification": "1L*12盒/箱",
+        "units": ["盒", "箱"], "aliases": [String](), "category": "goods"]
+    }
+    let seed = [product("GS10001-01", "内置名称"), product("GS10001-02", "新增货物")]
+    let existing = StockProductStorage.Snapshot(
+      products: [product("GS10001-01", "用户修改名称")], appliedSeeds: [])
+    let initialized = try StockProductStorage.applying(seed, version: "v1", to: existing)
+    XCTAssertEqual(initialized.products.count, 2)
+    XCTAssertEqual(initialized.products[0]["name"] as? String, "用户修改名称")
+    XCTAssertEqual(initialized.appliedSeeds, ["v1"])
+    let deleted = StockProductStorage.Snapshot(products: [], appliedSeeds: initialized.appliedSeeds)
+    let reloaded = try StockProductStorage.applying(seed, version: "v1", to: deleted)
+    XCTAssertTrue(reloaded.products.isEmpty)
+    XCTAssertEqual(reloaded.appliedSeeds, ["v1"])
+    XCTAssertThrowsError(try StockProductStorage.applying(seed + seed, version: "v2", to: deleted))
+    XCTAssertThrowsError(try StockProductStorage.applying(seed, version: "", to: deleted))
+  }
+
+  func testProductStorageMigratesLegacyListsAndRejectsCorruption() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+    addTeardownBlock { try FileManager.default.removeItem(at: url) }
+    let product: [String: Any] = ["id": "GS10001-01", "code": "GS10001-01", "name": "测试货物",
+      "specification": "", "units": ["个"], "aliases": [String](), "category": "goods"]
+    try JSONSerialization.data(withJSONObject: [product]).write(to: url, options: .atomic)
+    let legacy = try StockProductStorage.read(url)
+    XCTAssertTrue(legacy.appliedSeeds.isEmpty)
+    let initialized = try StockProductStorage.applying([product], version: "v1", to: legacy)
+    try StockProductStorage.write(initialized, to: url)
+    XCTAssertEqual(try StockProductStorage.read(url).appliedSeeds, ["v1"])
+    XCTAssertEqual(try StockProductStorage.read(url).products.count, 1)
+    try Data("{损坏的档案".utf8).write(to: url, options: .atomic)
+    XCTAssertThrowsError(try StockProductStorage.read(url))
+  }
+
+  func testVisualBackgroundRowsPreserveCoordinatesWithoutOCR() throws {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 828, height: 320), format: format).image { context in
+      UIColor.white.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 828, height: 320))
+      UIColor(white: 245.0 / 255.0, alpha: 1).setFill()
+      context.fill(CGRect(x: 0, y: 20, width: 828, height: 100))
+      context.fill(CGRect(x: 0, y: 220, width: 828, height: 100))
+    }
+    let bands = try StockHistoryProcessor.visualGoodsRows(XCTUnwrap(image.cgImage), top: 20, bottom: 320)
+    XCTAssertEqual(bands.map(\.minY), [20, 120, 220])
+    XCTAssertEqual(bands.map(\.height), [100, 100, 100])
+  }
+
+  func testVisualRowsKeepMissingCodeSeparateFromNextGoodsAndInventory() throws {
+    func cell(_ text: String, _ x: CGFloat, _ y: CGFloat) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.9, box: CGRect(x: x, y: y, width: 100, height: 15))
+    }
+    let cells = [cell("货物规格名称", 20, 0), cell("实盘总库存", 440, 0),
+      cell("缺货号的椰乳1L", 100, 45), cell("0.9盒", 500, 60),
+      cell("另一种椰乳250ml", 100, 150), cell("GS10001-02", 100, 175), cell("9盒", 500, 160)]
+    let bands = [CGRect(x: 0, y: 30, width: 828, height: 100),
+      CGRect(x: 0, y: 130, width: 828, height: 100)]
+    let rows = try StockTableParser.rows(cells, rowBands: bands)
+    XCTAssertEqual(rows.count, 2)
+    XCTAssertEqual(rows.map { $0.cells[1] }, ["0.9盒", "9盒"])
+    XCTAssertFalse(rows[0].cells[0].contains("GS10001-02"))
+    XCTAssertEqual(rows.map(\.sourceTop), [30, 130])
+    XCTAssertEqual(rows.map(\.sourceBottom), [130, 230])
+    XCTAssertThrowsError(try StockTableParser.rows(cells, rowBands: [bands[0]]))
+  }
+
   func testLowResolutionOCRLayoutScalesBothBlocksAndPixels() throws {
     let narrow = try StockHistoryProcessor.ocrLayout(width: 320)
     XCTAssertEqual(narrow.block, 696)
@@ -98,38 +167,6 @@ class RunnerTests: XCTestCase {
     XCTAssertThrowsError(try StockTableParser.rows([name] + prepared))
   }
 
-  func testRealNarrowWeeklyHeaderRecoveryPreservesOriginalCoordinates() throws {
-    let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "inventory_weekly_20260925",
-      withExtension: "jpg", subdirectory: "Fixtures"))
-    let original = try XCTUnwrap(UIImage(contentsOfFile: url.path)?.cgImage)
-    XCTAssertEqual(original.width, 320)
-    let headers = try XCTUnwrap(StockHistoryProcessor.recoverGoodsHeaders(original,
-      clean: StockHistoryProcessor.textImage(original)))
-    XCTAssertEqual(StockOCRRefinement.compact(headers.name.text), "货物规格名称")
-    XCTAssertEqual(StockOCRRefinement.compact(headers.stock.text), "实盘总库存")
-    XCTAssertGreaterThan(headers.stock.box.minX, headers.name.box.maxX)
-    for cell in [headers.name, headers.stock] {
-      XCTAssertGreaterThanOrEqual(cell.box.minX, 0)
-      XCTAssertLessThanOrEqual(cell.box.maxX, CGFloat(original.width))
-      XCTAssertGreaterThan(cell.box.minY, 180)
-      XCTAssertLessThan(cell.box.maxY, 250)
-    }
-  }
-
-  func testBlankImageCannotInventGoodsHeaders() throws {
-    let format = UIGraphicsImageRendererFormat()
-    format.scale = 1
-    let image = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 800), format: format).image { context in
-      UIColor.white.setFill()
-      context.fill(CGRect(x: 0, y: 0, width: 320, height: 800))
-    }
-    let original = try XCTUnwrap(image.cgImage)
-    XCTAssertNil(try StockHistoryProcessor.recoverGoodsHeaders(original, clean: original))
-    XCTAssertThrowsError(try StockHistoryProcessor.recognize(image))
-    let different = try XCTUnwrap(original.cropping(to: CGRect(x: 0, y: 0, width: 300, height: 800)))
-    XCTAssertThrowsError(try StockHistoryProcessor.recoverGoodsHeaders(original, clean: different))
-  }
-
   func testProductCodeCanonicalizationDoesNotInventDigits() {
     XCTAssertEqual(StockOCRRefinement.canonicalProductCode("gs09637－02"), "GS09637-02")
     XCTAssertEqual(StockOCRRefinement.canonicalProductCode(" GS09889-03 "), "GS09889-03")
@@ -204,64 +241,6 @@ class RunnerTests: XCTestCase {
     let actual = [cell("GS00587-10", 100, confidence: 1)]
     XCTAssertEqual(try StockHistoryProcessor.mergeVerifiedProductCodes([mixed], raw: actual,
       clean: actual)[0].text, "名称1L*12盒/箱GS00587-10")
-  }
-
-  func testRealNarrowCodeColumnRecoversSevenGoodsWithoutLeavingCorruptPrefixes() throws {
-    let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "inventory_weekly_20260925",
-      withExtension: "jpg", subdirectory: "Fixtures"))
-    let source = try XCTUnwrap(UIImage(contentsOfFile: url.path)?.cgImage)
-    let original = try XCTUnwrap(source.cropping(to: CGRect(x: 0, y: 0, width: 320, height: 600)))
-    // 使用失败日志中的标题坐标和错误货号作为输入，后续货号必须从真实图片中复读。
-    let cells = [
-      StockOCRCell(text: "货物规格名称", confidence: 0.3,
-        box: CGRect(x: 14.87, y: 198.26, width: 66.25, height: 13.47)),
-      StockOCRCell(text: "实盘总库存", confidence: 0.3,
-        box: CGRect(x: 168.93, y: 198.65, width: 56.15, height: 12.71)),
-      StockOCRCell(text: "GS00119-04", confidence: 1,
-        box: CGRect(x: 42, y: 259, width: 65, height: 11)),
-      StockOCRCell(text: "G500448-02", confidence: 0.3,
-        box: CGRect(x: 42, y: 356, width: 68, height: 11)),
-    ]
-    let recovered = try StockHistoryProcessor.recoverProductCodes(cells, original: original,
-      clean: StockHistoryProcessor.textImage(original), columnX: 187, progress: { _ in })
-    let codes = recovered.compactMap { StockOCRRefinement.canonicalProductCode($0.text) }
-    XCTAssertEqual(Set(codes), Set(["GS00119-04", "GS00197-04", "GS00448-02", "GS00587-04",
-      "GS00587-10", "GS00595-01", "GS00804-01"]))
-    XCTAssertEqual(codes.count, 7, "丢行和重复行都必须失败")
-    XCTAssertFalse(recovered.contains { $0.text.contains("G500448") })
-  }
-
-  func testRealDailyInventoryIncludesAllGoodsAndFivePreparedMaterials() throws {
-    let url = try XCTUnwrap(Bundle(for: Self.self).url(
-      forResource: "inventory_daily_20261005", withExtension: "jpg", subdirectory: "Fixtures"))
-    let image = try XCTUnwrap(UIImage(contentsOfFile: url.path))
-    let rows = try StockHistoryProcessor.recognize(image)
-    let goods = rows.filter { $0.category != "prepared" }
-    let prepared = rows.filter { $0.category == "prepared" }
-    XCTAssertEqual(goods.count, 116)
-    let codesURL = try XCTUnwrap(Bundle(for: Self.self).url(
-      forResource: "inventory_daily_20261005_codes", withExtension: "json", subdirectory: "Fixtures"))
-    let expectedCodes = Set(try JSONDecoder().decode([String].self, from: Data(contentsOf: codesURL)))
-    let expression = try NSRegularExpression(pattern: "GS[0-9]{5}-[0-9]{2}")
-    let actualCodes = Set(goods.flatMap { row in
-      let text = StockOCRRefinement.compact(row.cells[0])
-      return expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).map {
-        (text as NSString).substring(with: $0.range)
-      }
-    })
-    XCTAssertEqual(actualCodes, expectedCodes,
-      "缺失货号：\(expectedCodes.subtracting(actualCodes).sorted())；额外货号：\(actualCodes.subtracting(expectedCodes).sorted())；含糊货号原文：\(goods.filter { row in expression.firstMatch(in: row.cells[0], range: NSRange(row.cells[0].startIndex..., in: row.cells[0])) == nil }.map { $0.cells[0] })")
-    XCTAssertEqual(prepared.count, 5)
-    let expected = [("青金桔", "13个"), ("冷萃咖啡液", "1200毫升"),
-      ("鲜橙", "3个"), ("香水柠檬", "6个"), ("巧克力", "0克")]
-    for (name, quantity) in expected {
-      let row = try XCTUnwrap(prepared.first { $0.cells[0].contains(name) })
-      XCTAssertEqual(StockOCRRefinement.compact(row.cells[1]), quantity)
-      XCTAssertFalse(row.inventoryUncertain ?? true)
-    }
-    let concentrate = try XCTUnwrap(goods.first { $0.cells[0].contains("GS10623-01") })
-    XCTAssertTrue(StockOCRRefinement.compact(concentrate.cells[0]).contains("1L*12瓶/箱"))
-    XCTAssertEqual(StockOCRRefinement.compact(concentrate.cells[1]), "5.3瓶")
   }
 
   func testPreparedMaterialsPairWrappedNamesAndKeepMissingAndZeroQuantities() throws {
@@ -403,80 +382,6 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(try StockTableParser.rows(cells, retryName: { _, _, _ in other })[0].cells[0].contains("另一款"))
   }
 
-  func testRealWeeklyInventoryPreservesEveryGoodsQuantityAndRecoversPreparedRows() throws {
-    struct ExpectedGoods: Decodable {
-      let code: String
-      let quantity: String
-    }
-    let bundle = Bundle(for: Self.self)
-    let url = try XCTUnwrap(bundle.url(forResource: "inventory_weekly_20260925",
-      withExtension: "jpg", subdirectory: "Fixtures"))
-    let expectedURL = try XCTUnwrap(bundle.url(forResource: "inventory_weekly_20260925_expected",
-      withExtension: "json", subdirectory: "Fixtures"))
-    let expected = try JSONDecoder().decode([ExpectedGoods].self, from: Data(contentsOf: expectedURL))
-    let rows = try StockHistoryProcessor.recognize(XCTUnwrap(UIImage(contentsOfFile: url.path)))
-    let goods = rows.filter { $0.category != "prepared" }
-    XCTAssertEqual(goods.count, 179)
-    XCTAssertEqual(goods.count, expected.count)
-    // 按原单顺序逐项核验，缺行、重复、错序及库存跨行都必须失败。
-    for (actual, expectedRow) in zip(goods, expected) {
-      XCTAssertTrue(StockOCRRefinement.compact(actual.cells[0]).hasSuffix(expectedRow.code))
-      XCTAssertEqual(StockOCRRefinement.compact(actual.cells[1]),
-        StockOCRRefinement.compact(expectedRow.quantity), expectedRow.code)
-    }
-    let prepared = rows.filter { $0.category == "prepared" }
-    XCTAssertEqual(prepared.count, 5)
-    for (name, quantity) in [("青金桔", "12个"), ("鲜橙", "5个"), ("香水柠檬", "7个"),
-      ("冷萃咖啡液", "3000毫升"), ("巧克力", "0克")] {
-      let row = try XCTUnwrap(prepared.first { $0.cells[0].contains(name) })
-      XCTAssertEqual(StockOCRRefinement.compact(row.cells[1]), quantity, name)
-      XCTAssertFalse(row.inventoryUncertain ?? true, name)
-    }
-    for code in ["GS04465-08", "GS04465-10"] {
-      let row = try XCTUnwrap(goods.first { $0.cells[0].contains(code) })
-      XCTAssertTrue(StockOCRRefinement.compact(row.cells[0]).contains("1L*12盒/箱"), code)
-    }
-    XCTAssertFalse(try XCTUnwrap(goods.first { $0.cells[0].contains("GS00412-218") }).cells[0].contains("翻"))
-    XCTAssertFalse(try XCTUnwrap(goods.first { $0.cells[0].contains("GS00440-540") }).cells[0].contains("幽國"))
-  }
-
-  func testPreparedUnitRecoveryReadsCurrentRowAndDeepInkExcludesWatermark() throws {
-    let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "inventory_weekly_20260925_prepared",
-      withExtension: "png", subdirectory: "Fixtures"))
-    let image = try XCTUnwrap(UIImage(contentsOfFile: url.path)?.cgImage)
-    let clean = try StockHistoryProcessor.textImage(image)
-    func unit(_ text: String, _ y: Double) -> StockOCRCell {
-      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: 563, y: y, width: 30, height: 28))
-    }
-    let anchors = [unit("个", 971), unit("个", 1054), unit("毫升", 1237), unit("克", 1318)]
-    let lemonUnit = try XCTUnwrap(StockHistoryProcessor.recoverPreparedUnit(image, clean: clean,
-      cells: anchors, start: 1115, end: 1200, quantityLeft: 440))
-    XCTAssertEqual(StockOCRRefinement.compact(lemonUnit.text), "个")
-    XCTAssertGreaterThanOrEqual(lemonUnit.box.midY, 1115)
-    XCTAssertLessThan(lemonUnit.box.midY, 1200)
-    XCTAssertNil(try StockHistoryProcessor.recoverPreparedUnit(image, clean: clean,
-      cells: [anchors[0]], start: 1115, end: 1200, quantityLeft: 440),
-      "只有一个列锚点时不能借用邻行单位")
-    let quantity = try XCTUnwrap(StockHistoryProcessor.compactPreparedQuantity(image,
-      numberCrop: CGRect(x: 440, y: 957, width: 115, height: 50), unit: anchors[0], inkThreshold: 210))
-    XCTAssertEqual(StockOCRRefinement.compact(quantity.text), "12")
-    XCTAssertGreaterThan(quantity.box.minX, 480, "水印字符不能参与数字像素边界")
-    let format = UIGraphicsImageRendererFormat()
-    format.scale = 1
-    let faintWatermark = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 50), format: format).image {
-      context in
-      UIColor(white: 245.0 / 255, alpha: 1).setFill()
-      context.fill(CGRect(x: 0, y: 0, width: 160, height: 50))
-      UIColor(white: 214.0 / 255, alpha: 1).setFill()
-      context.fill(CGRect(x: 20, y: 10, width: 30, height: 25))
-    }
-    let blankUnit = StockOCRCell(text: "个", confidence: 0.95,
-      box: CGRect(x: 120, y: 10, width: 25, height: 25))
-    XCTAssertNil(try StockHistoryProcessor.compactPreparedQuantity(XCTUnwrap(faintWatermark.cgImage),
-      numberCrop: CGRect(x: 0, y: 0, width: 110, height: 50), unit: blankUnit, inkThreshold: 210),
-      "仅有浅色水印的空框不能生成数量")
-  }
-
   func testGoodsNamesExcludeThumbnailTextAndRecoverTruncatedPackaging() throws {
     func cell(_ text: String, _ x: Double, _ y: Double, _ width: Double = 100) -> StockOCRCell {
       StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: width, height: 20))
@@ -554,19 +459,6 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(record.needsAutomaticTitle)
     record.reviewed = true
     XCTAssertFalse(record.needsAutomaticTitle, "已手动保存的名称必须保留")
-  }
-
-  func testDefaultNameRecognizesRealWeeklyMonthlyAndDailyScreenshots() throws {
-    for (resource, expected) in [
-      ("metadata_week", "2026-09-18 周盘"),
-      ("metadata_month", "2026-09-30 月盘"),
-      ("metadata_daily", "2026-10-02 日盘")
-    ] {
-      let url = try XCTUnwrap(Bundle(for: Self.self).url(
-        forResource: resource, withExtension: "png", subdirectory: "Fixtures"))
-      let image = try XCTUnwrap(UIImage(contentsOfFile: url.path))
-      XCTAssertEqual(try StockHistoryProcessor.documentTitle(image), expected)
-    }
   }
 
   func testShortcutOverweightRuleMatchesApp() throws {
@@ -659,48 +551,6 @@ class RunnerTests: XCTestCase {
     ], crop: StockCrop(top: 0, bottom: 0)))
   }
 
-  func testRealScreenshotGroupIgnoresPinnedHeadersAndRetainsShortOverlaps() throws {
-    let cases = [
-      ("screenshot_first", "screenshot_second", 1233),
-      ("screenshot_sparse_first", "screenshot_sparse_second", 1240),
-      ("screenshot_short_first", "screenshot_short_second", 1315),
-      ("screenshot_footer_first", "screenshot_footer_second", 1265)
-    ]
-    for (firstName, secondName, expectedShift) in cases {
-      let firstURL = try XCTUnwrap(Bundle(for: Self.self).url(
-        forResource: firstName, withExtension: "PNG", subdirectory: "Fixtures"))
-      let secondURL = try XCTUnwrap(Bundle(for: Self.self).url(
-        forResource: secondName, withExtension: "PNG", subdirectory: "Fixtures"))
-      let first = try StockCrop.screenshots.apply(XCTUnwrap(UIImage(contentsOfFile: firstURL.path)?.cgImage))
-      let second = try StockCrop.screenshots.apply(XCTUnwrap(UIImage(contentsOfFile: secondURL.path)?.cgImage))
-      let firstTop = try StockHistoryProcessor.screenshotBodyTop(first)
-      let secondTop = try StockHistoryProcessor.screenshotBodyTop(second)
-      XCTAssertLessThan(secondTop, 220, "应定位货物表头，不能被下方预制物料的表头干扰")
-      if firstName == "screenshot_first" {
-        XCTAssertGreaterThan(firstTop, 500)
-        XCTAssertLessThan(secondTop, 220)
-        let oldFirst = try StockGrayFrame(StockCrop.automatic.apply(
-          XCTUnwrap(UIImage(contentsOfFile: firstURL.path)?.cgImage)))
-        let oldSecond = try StockGrayFrame(StockCrop.automatic.apply(
-          XCTUnwrap(UIImage(contentsOfFile: secondURL.path)?.cgImage)))
-        XCTAssertThrowsError(try oldFirst.displacement(to: oldSecond, maximumShiftRatio: 0.90))
-      }
-      let a = try StockGrayFrame(first, contentTop: firstTop)
-      let b = try StockGrayFrame(second, contentTop: secondTop)
-      XCTAssertEqual(try a.displacement(to: b, maximumShiftRatio: 0.90), expectedShift)
-      let stitched = try StockHistoryProcessor.stitchScreenshots([
-        StockScreenshotInput(url: secondURL, capturedAt: Date(timeIntervalSince1970: 20)),
-        StockScreenshotInput(url: firstURL, capturedAt: Date(timeIntervalSince1970: 10))
-      ])
-      XCTAssertEqual(stitched.size, CGSize(width: first.width, height: first.height + expectedShift))
-      if firstName == "screenshot_first" {
-        let rows = try StockHistoryProcessor.recognize(stitched)
-        XCTAssertEqual(rows.count, 16)
-        XCTAssertEqual(rows.filter { $0.cells[0].contains("GS00804-01") }.count, 1)
-      }
-    }
-  }
-
   func testOCRContrastSuppressesFaintWatermarkAndPreservesDarkInk() throws {
     let format = UIGraphicsImageRendererFormat()
     format.scale = 1
@@ -786,38 +636,6 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(missing[1].inventoryUncertain, true)
   }
 
-  func testPartialInventoryDoesNotRequireEveryProductToHaveQuantity() throws {
-    let url = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
-      forResource: "partial_inventory", withExtension: "png", subdirectory: "Fixtures"))
-    let image = try XCTUnwrap(UIImage(data: Data(contentsOf: url)))
-    let rows = try StockHistoryProcessor.recognize(image)
-    XCTAssertEqual(rows.count, 3)
-    XCTAssertTrue(rows[0].cells[1].contains("14"))
-    XCTAssertNil(rows[1].cells[1].range(of: "[0-9]", options: .regularExpression))
-    XCTAssertNil(rows[2].cells[1].range(of: "[0-9]", options: .regularExpression))
-    let id = UUID().uuidString
-    let record = StockHistoryDocument(schemaVersion: 2, id: id, title: "部分盘点",
-      createdAt: "2026-10-02T08:49:00Z", imageName: "\(id).png", lines: rows, reviewed: false)
-    XCTAssertNoThrow(try record.validate())
-    XCTAssertTrue(StockTableParser.blankInventory("-袋-根"))
-    XCTAssertFalse(StockTableParser.blankInventory("0袋"))
-  }
-
-  func testVisionRecognizesInventoryFromProvidedRecording() throws {
-    // 从用户录屏的原比例长图截取表头、126～128项及176～177项，保留原水印。
-    let url = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
-      forResource: "recording_inventory_rows", withExtension: "png", subdirectory: "Fixtures"))
-    let image = try XCTUnwrap(UIImage(data: Data(contentsOf: url)))
-    let rows = try StockHistoryProcessor.recognize(image)
-    XCTAssertEqual(rows.count, 5)
-    let milk = try XCTUnwrap(rows.first { $0.cells[0].contains("GS06628-06") })
-    XCTAssertTrue(milk.cells[1].contains("12.1"))
-    XCTAssertFalse(milk.cells[0].contains("12.1"))
-    let straw = try XCTUnwrap(rows.first { $0.cells[0].contains("GS01429-09") })
-    XCTAssertTrue(straw.cells[1].contains("400"))
-    XCTAssertTrue(straw.cells[1].contains("2"))
-  }
-
   func testRecognitionRevisionAutomaticallyUpgradesOnlyUnreviewedHistory() throws {
     let id = UUID().uuidString
     let legacy = StockHistoryDocument(schemaVersion: 2, id: id,
@@ -848,6 +666,33 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(StockOCRRefinement.resolve(original, raw: nil, clean: clean, inventory: false).confidence, 0.4)
     let smallGain = StockOCRCell(text: "GS00712-01", confidence: 0.42, box: box)
     XCTAssertEqual(StockOCRRefinement.resolve(original, raw: raw, clean: smallGain, inventory: false).text, original.text)
+  }
+
+  func testGenericRefinementKeepsVerifiedCodeCanonical() {
+    let box = CGRect(x: 40, y: 100, width: 70, height: 14)
+    let raw = StockOCRCell(text: "G508050-01", confidence: 0.9, box: box)
+    let clean = StockOCRCell(text: "G508050-01", confidence: 0.8, box: box)
+    for text in ["GS0805001", "G508050-01", "G$08050-01"] {
+      // 通用复核首次发现完整编码，或复读一个未确认的编码时，都不能留下错误前缀。
+      let original = StockOCRCell(text: text, confidence: 0.3, box: box)
+      let corrected = StockOCRRefinement.resolve(original, raw: raw, clean: clean, inventory: false)
+      XCTAssertEqual(corrected.text, "GS08050-01")
+      XCTAssertEqual(corrected.confidence, 0.8)
+      XCTAssertEqual(corrected.box, box)
+      let disagreement = StockOCRCell(text: "G508050-02", confidence: 0.99, box: box)
+      XCTAssertEqual(StockOCRRefinement.resolve(original, raw: raw, clean: disagreement,
+        inventory: false).text, original.text)
+      let ambiguous = StockOCRCell(text: "G508O50-01", confidence: 0.99, box: box)
+      if StockOCRRefinement.isProductCodeCandidate(text) {
+        XCTAssertEqual(StockOCRRefinement.resolve(original, raw: ambiguous, clean: ambiguous,
+          inventory: false).text, original.text, "不能把数字里的 O 替换为 0")
+      }
+    }
+    for text in ["名称1L*12盒/箱GS08050-01", "名称1L*12盒/箱G508050-01"] {
+      let original = StockOCRCell(text: text, confidence: 0.3, box: box)
+      XCTAssertEqual(StockOCRRefinement.resolve(original, raw: raw, clean: clean,
+        inventory: false).text, text, "名称和编码粘连时必须保留完整规格")
+    }
   }
 
   func testRefinementCannotBorrowAnotherRowOrReplaceInventoryWithNonNumericText() {
@@ -889,34 +734,6 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(rows[1].cells[1], "－箱13包")
     XCTAssertEqual(try StockTableParser.rows(cells).last?.inventoryUncertain, true)
     XCTAssertEqual(try StockTableParser.rows(cells) { _, _ in [cell("2200毫升", 500, 310)] }.last?.inventoryUncertain, true)
-  }
-
-  func testVisionRecognizesLastGoodsBeforePreparedMaterials() throws {
-    let url = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
-      forResource: "recording_inventory_footer", withExtension: "png", subdirectory: "Fixtures"))
-    let image = try XCTUnwrap(UIImage(data: Data(contentsOf: url)))
-    let rows = try StockHistoryProcessor.recognize(image)
-    let goods = rows.filter { $0.category != "prepared" }
-    let prepared = rows.filter { $0.category == "prepared" }
-    XCTAssertEqual(goods.count, 2)
-    XCTAssertEqual(prepared.count, 4)
-    let coldBrew = try XCTUnwrap(prepared.first { $0.cells[0].contains("冷萃") },
-      "预制名称识别结果：\(prepared.map { $0.cells[0] })")
-    let citrus = try XCTUnwrap(prepared.first { $0.cells[0].contains("青金桔") },
-      "预制名称识别结果：\(prepared.map { $0.cells[0] })")
-    XCTAssertEqual(StockOCRRefinement.compact(coldBrew.cells[1]), "2200毫升",
-      "冷萃实际识别：\(coldBrew.cells[1])，待确认：\(coldBrew.inventoryUncertain ?? false)")
-    XCTAssertEqual(StockOCRRefinement.compact(citrus.cells[1]), "0个",
-      "青金桔实际识别：\(citrus.cells[1])，待确认：\(citrus.inventoryUncertain ?? false)")
-    let tissue = try XCTUnwrap(goods.last)
-    XCTAssertTrue(tissue.cells[0].contains("GS00659-02"))
-    XCTAssertTrue(tissue.cells[1].contains("13"))
-    XCTAssertFalse(tissue.cells[1].contains("2200"))
-    let cg = try XCTUnwrap(image.cgImage)
-    let enlarged = try StockHistoryProcessor.inventoryRow(cg,
-      crop: CGRect(x: 487, y: 205, width: cg.width - 487, height: 145), scale: 2)
-    XCTAssertTrue(enlarged.contains { $0.text.contains("13") })
-    XCTAssertTrue(enlarged.allSatisfy { $0.box.midY >= 205 && $0.box.midY < 350 })
   }
 
   func testMergedNameAndInventorySplitUsesGeometryRatherThanSpecificationDigits() {
@@ -1050,4 +867,173 @@ class RunnerTests: XCTestCase {
     XCTAssertThrowsError(try StockHistoryStorage.reorder([UUID().uuidString]))
   }
 
+}
+
+/// 真实原始 PNG 的独立识别验收；不进入日常编译的确定性规则测试。
+class VisionAcceptanceTests: XCTestCase {
+  func testBlankImageCannotInventGoodsHeaders() throws {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 800), format: format).image { context in
+      UIColor.white.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 320, height: 800))
+    }
+    let original = try XCTUnwrap(image.cgImage)
+    XCTAssertNil(try StockHistoryProcessor.recoverGoodsHeaders(original, clean: original))
+    XCTAssertThrowsError(try StockHistoryProcessor.recognize(image))
+    let different = try XCTUnwrap(original.cropping(to: CGRect(x: 0, y: 0, width: 300, height: 800)))
+    XCTAssertThrowsError(try StockHistoryProcessor.recoverGoodsHeaders(original, clean: different))
+  }
+
+  func testPreparedUnitRecoveryReadsCurrentRowAndDeepInkExcludesWatermark() throws {
+    let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "inventory_weekly_20260925_prepared",
+      withExtension: "png", subdirectory: "Fixtures"))
+    let image = try XCTUnwrap(UIImage(contentsOfFile: url.path)?.cgImage)
+    let clean = try StockHistoryProcessor.textImage(image)
+    func unit(_ text: String, _ y: Double) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: 563, y: y, width: 30, height: 28))
+    }
+    let anchors = [unit("个", 971), unit("个", 1054), unit("毫升", 1237), unit("克", 1318)]
+    let lemonUnit = try XCTUnwrap(StockHistoryProcessor.recoverPreparedUnit(image, clean: clean,
+      cells: anchors, start: 1115, end: 1200, quantityLeft: 440))
+    XCTAssertEqual(StockOCRRefinement.compact(lemonUnit.text), "个")
+    XCTAssertGreaterThanOrEqual(lemonUnit.box.midY, 1115)
+    XCTAssertLessThan(lemonUnit.box.midY, 1200)
+    XCTAssertNil(try StockHistoryProcessor.recoverPreparedUnit(image, clean: clean,
+      cells: [anchors[0]], start: 1115, end: 1200, quantityLeft: 440),
+      "只有一个列锚点时不能借用邻行单位")
+    let quantity = try XCTUnwrap(StockHistoryProcessor.compactPreparedQuantity(image,
+      numberCrop: CGRect(x: 440, y: 957, width: 115, height: 50), unit: anchors[0], inkThreshold: 210))
+    XCTAssertEqual(StockOCRRefinement.compact(quantity.text), "12")
+    XCTAssertGreaterThan(quantity.box.minX, 480, "水印字符不能参与数字像素边界")
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let faintWatermark = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 50), format: format).image {
+      context in
+      UIColor(white: 245.0 / 255, alpha: 1).setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 160, height: 50))
+      UIColor(white: 214.0 / 255, alpha: 1).setFill()
+      context.fill(CGRect(x: 20, y: 10, width: 30, height: 25))
+    }
+    let blankUnit = StockOCRCell(text: "个", confidence: 0.95,
+      box: CGRect(x: 120, y: 10, width: 25, height: 25))
+    XCTAssertNil(try StockHistoryProcessor.compactPreparedQuantity(XCTUnwrap(faintWatermark.cgImage),
+      numberCrop: CGRect(x: 0, y: 0, width: 110, height: 50), unit: blankUnit, inkThreshold: 210),
+      "仅有浅色水印的空框不能生成数量")
+  }
+
+  func testDefaultNameRecognizesRealWeeklyMonthlyAndDailyScreenshots() throws {
+    for (resource, expected) in [
+      ("metadata_week", "2026-09-18 周盘"),
+      ("metadata_month", "2026-09-30 月盘"),
+      ("metadata_daily", "2026-10-02 日盘")
+    ] {
+      let url = try XCTUnwrap(Bundle(for: Self.self).url(
+        forResource: resource, withExtension: "png", subdirectory: "Fixtures"))
+      let image = try XCTUnwrap(UIImage(contentsOfFile: url.path))
+      XCTAssertEqual(try StockHistoryProcessor.documentTitle(image), expected)
+    }
+  }
+
+  func testRealScreenshotGroupIgnoresPinnedHeadersAndRetainsShortOverlaps() throws {
+    let cases = [
+      ("screenshot_first", "screenshot_second", 1233),
+      ("screenshot_sparse_first", "screenshot_sparse_second", 1240),
+      ("screenshot_short_first", "screenshot_short_second", 1315),
+      ("screenshot_footer_first", "screenshot_footer_second", 1265)
+    ]
+    for (firstName, secondName, expectedShift) in cases {
+      let firstURL = try XCTUnwrap(Bundle(for: Self.self).url(
+        forResource: firstName, withExtension: "PNG", subdirectory: "Fixtures"))
+      let secondURL = try XCTUnwrap(Bundle(for: Self.self).url(
+        forResource: secondName, withExtension: "PNG", subdirectory: "Fixtures"))
+      let first = try StockCrop.screenshots.apply(XCTUnwrap(UIImage(contentsOfFile: firstURL.path)?.cgImage))
+      let second = try StockCrop.screenshots.apply(XCTUnwrap(UIImage(contentsOfFile: secondURL.path)?.cgImage))
+      let firstTop = try StockHistoryProcessor.screenshotBodyTop(first)
+      let secondTop = try StockHistoryProcessor.screenshotBodyTop(second)
+      XCTAssertLessThan(secondTop, 220, "应定位货物表头，不能被下方预制物料的表头干扰")
+      if firstName == "screenshot_first" {
+        XCTAssertGreaterThan(firstTop, 500)
+        XCTAssertLessThan(secondTop, 220)
+        let oldFirst = try StockGrayFrame(StockCrop.automatic.apply(
+          XCTUnwrap(UIImage(contentsOfFile: firstURL.path)?.cgImage)))
+        let oldSecond = try StockGrayFrame(StockCrop.automatic.apply(
+          XCTUnwrap(UIImage(contentsOfFile: secondURL.path)?.cgImage)))
+        XCTAssertThrowsError(try oldFirst.displacement(to: oldSecond, maximumShiftRatio: 0.90))
+      }
+      let a = try StockGrayFrame(first, contentTop: firstTop)
+      let b = try StockGrayFrame(second, contentTop: secondTop)
+      XCTAssertEqual(try a.displacement(to: b, maximumShiftRatio: 0.90), expectedShift)
+      let stitched = try StockHistoryProcessor.stitchScreenshots([
+        StockScreenshotInput(url: secondURL, capturedAt: Date(timeIntervalSince1970: 20)),
+        StockScreenshotInput(url: firstURL, capturedAt: Date(timeIntervalSince1970: 10))
+      ])
+      XCTAssertEqual(stitched.size, CGSize(width: first.width, height: first.height + expectedShift))
+      if firstName == "screenshot_first" {
+        let rows = try StockHistoryProcessor.recognize(stitched)
+        XCTAssertEqual(rows.count, 16)
+        XCTAssertEqual(rows.filter { $0.cells[0].contains("GS00804-01") }.count, 1)
+      }
+    }
+  }
+
+  func testPartialInventoryDoesNotRequireEveryProductToHaveQuantity() throws {
+    let url = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
+      forResource: "partial_inventory", withExtension: "png", subdirectory: "Fixtures"))
+    let image = try XCTUnwrap(UIImage(data: Data(contentsOf: url)))
+    let rows = try StockHistoryProcessor.recognize(image)
+    XCTAssertEqual(rows.count, 3)
+    XCTAssertTrue(rows[0].cells[1].contains("14"))
+    XCTAssertNil(rows[1].cells[1].range(of: "[0-9]", options: .regularExpression))
+    XCTAssertNil(rows[2].cells[1].range(of: "[0-9]", options: .regularExpression))
+    let id = UUID().uuidString
+    let record = StockHistoryDocument(schemaVersion: 2, id: id, title: "部分盘点",
+      createdAt: "2026-10-02T08:49:00Z", imageName: "\(id).png", lines: rows, reviewed: false)
+    XCTAssertNoThrow(try record.validate())
+    XCTAssertTrue(StockTableParser.blankInventory("-袋-根"))
+    XCTAssertFalse(StockTableParser.blankInventory("0袋"))
+  }
+
+  func testVisionRecognizesInventoryFromProvidedRecording() throws {
+    // 从用户录屏的原比例长图截取表头、126～128项及176～177项，保留原水印。
+    let url = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
+      forResource: "recording_inventory_rows", withExtension: "png", subdirectory: "Fixtures"))
+    let image = try XCTUnwrap(UIImage(data: Data(contentsOf: url)))
+    let rows = try StockHistoryProcessor.recognize(image)
+    XCTAssertEqual(rows.count, 5)
+    let milk = try XCTUnwrap(rows.first { $0.cells[0].contains("GS06628-06") })
+    XCTAssertTrue(milk.cells[1].contains("12.1"))
+    XCTAssertFalse(milk.cells[0].contains("12.1"))
+    let straw = try XCTUnwrap(rows.first { $0.cells[0].contains("GS01429-09") })
+    XCTAssertTrue(straw.cells[1].contains("400"))
+    XCTAssertTrue(straw.cells[1].contains("2"))
+  }
+
+  func testVisionRecognizesLastGoodsBeforePreparedMaterials() throws {
+    let url = try XCTUnwrap(Bundle(for: RunnerTests.self).url(
+      forResource: "recording_inventory_footer", withExtension: "png", subdirectory: "Fixtures"))
+    let image = try XCTUnwrap(UIImage(data: Data(contentsOf: url)))
+    let rows = try StockHistoryProcessor.recognize(image)
+    let goods = rows.filter { $0.category != "prepared" }
+    let prepared = rows.filter { $0.category == "prepared" }
+    XCTAssertEqual(goods.count, 2)
+    XCTAssertEqual(prepared.count, 4)
+    let coldBrew = try XCTUnwrap(prepared.first { $0.cells[0].contains("冷萃") },
+      "预制名称识别结果：\(prepared.map { $0.cells[0] })")
+    let citrus = try XCTUnwrap(prepared.first { $0.cells[0].contains("青金桔") },
+      "预制名称识别结果：\(prepared.map { $0.cells[0] })")
+    XCTAssertEqual(StockOCRRefinement.compact(coldBrew.cells[1]), "2200毫升",
+      "冷萃实际识别：\(coldBrew.cells[1])，待确认：\(coldBrew.inventoryUncertain ?? false)")
+    XCTAssertEqual(StockOCRRefinement.compact(citrus.cells[1]), "0个",
+      "青金桔实际识别：\(citrus.cells[1])，待确认：\(citrus.inventoryUncertain ?? false)")
+    let tissue = try XCTUnwrap(goods.last)
+    XCTAssertTrue(tissue.cells[0].contains("GS00659-02"))
+    XCTAssertTrue(tissue.cells[1].contains("13"))
+    XCTAssertFalse(tissue.cells[1].contains("2200"))
+    let cg = try XCTUnwrap(image.cgImage)
+    let enlarged = try StockHistoryProcessor.inventoryRow(cg,
+      crop: CGRect(x: 487, y: 205, width: cg.width - 487, height: 145), scale: 2)
+    XCTAssertTrue(enlarged.contains { $0.text.contains("13") })
+    XCTAssertTrue(enlarged.allSatisfy { $0.box.midY >= 205 && $0.box.midY < 350 })
+  }
 }

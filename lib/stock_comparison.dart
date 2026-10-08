@@ -44,6 +44,9 @@ class StockComparison {
       for (final line in document.lines) {
         // 无 GS 编码的预制物料单独展示和导出，不进入按货号比较的货物索引。
         if (line.isPrepared) continue;
+        if (line.inventory.hasValue && !line.ready) {
+          throw FormatException('「${document.title}」存在未确认的货物或库存，请先对照原图校对');
+        }
         if (!line.inventory.hasValue) continue;
         final codes = RegExp(
           r'(?<![A-Za-z0-9])[Gg][Ss]\d{4,8}[-－—]\d{2,3}(?![A-Za-z0-9])',
