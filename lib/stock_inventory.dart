@@ -139,6 +139,10 @@ class StockInventory {
     double? confidence, {
     String? fixedUnit,
   }) {
+    if (confidence != null &&
+        (!confidence.isFinite || confidence < 0 || confidence > 1)) {
+      throw const FormatException('库存证据评分必须在 0 到 1 之间');
+    }
     final signature = readingSignature(expected);
     var supporting = 0;
     var abstentions = 0;
@@ -150,7 +154,8 @@ class StockInventory {
       } else if (fixedUnit != null &&
           sameFixedUnitNumber(expected, raw, fixedUnit)) {
         abstentions++; // 单位误读不是完整证据，只依赖另两次明确带标准单位的读数。
-      } else if (noiseVariant(expected, raw) ||
+      } else if (partialReading(expected, raw) ||
+          noiseVariant(expected, raw) ||
           contaminatedVariant(expected, raw)) {
         abstentions++;
       } else if (actual == null &&
@@ -165,14 +170,23 @@ class StockInventory {
         supporting >= 2 &&
         conflicting == 0 &&
         abstentions == 0;
+    final hasQuantity = StockInventory.parse(expected).hasValue;
+    final decisiveVotes = supporting + conflicting;
+    // 三次完整一致可确认；存在真实异读时至少五票、占有效票数的 80%。
+    // 占位符不能通过投票覆盖实际数量，所有原始异读仍保留在调试记录中。
+    final majority =
+        hasQuantity && supporting >= 5 && supporting * 5 >= decisiveVotes * 4;
     final sufficient =
         confidence != null &&
         confidence > 0 &&
-        conflicting == 0 &&
         signature != null &&
-        ((allAgree && (confidence >= .8 || supporting >= 4)) ||
-            (fixedUnit != null && supporting >= 2 && confidence >= .8) ||
-            (supporting >= 3 && abstentions > 0));
+        (majority ||
+            (conflicting == 0 &&
+                ((allAgree && confidence >= .8) ||
+                    (fixedUnit != null &&
+                        supporting >= 2 &&
+                        confidence >= .8) ||
+                    supporting >= 3)));
     return StockReadingEvidence(
       supporting,
       abstentions,
@@ -180,6 +194,59 @@ class StockInventory {
       allAgree,
       sufficient,
     );
+  }
+
+  /// 漏掉完整分区属于弃权，已读出的每个分区仍必须完全一致。
+  static bool partialReading(String expected, String raw) {
+    final expectedSignature = readingSignature(expected);
+    final actualSignature = readingSignature(raw);
+    if (expectedSignature == null || actualSignature == null) return false;
+    final complete = expectedSignature.split('|').toSet();
+    final partial = actualSignature.split('|').toSet();
+    return partial.length < complete.length && complete.containsAll(partial);
+  }
+
+  /// 只选择实际完整读数中的唯一获胜项，不拼接各分区，不从档案推算数量。
+  static String? consensus(
+    List<String> readings,
+    double? confidence, {
+    String? fixedUnit,
+    required List<String> allowedUnits,
+    required bool requireSections,
+  }) {
+    if (allowedUnits.isEmpty) throw ArgumentError('投票必须提供库存单位');
+    final candidates = <String, String>{};
+    for (final reading in readings) {
+      final signature = readingSignature(reading);
+      if (signature == null) continue;
+      final parsed = StockInventory.parse(reading);
+      if (parsed.parts.values
+          .expand((p) => p.amounts.keys)
+          .any((unit) => !allowedUnits.contains(unit))) {
+        continue;
+      }
+      if (requireSections &&
+          !['库存', '冷藏', '冷冻'].every(parsed.parts.containsKey)) {
+        continue;
+      }
+      // 若任一读数见到分区标题，不能用单个分区或无标签读数代替完整库存。
+      if (!parsed.parts.containsKey('库存') ||
+          parsed.reviewStatus == '总库存与冷藏、冷冻合计不一致') {
+        continue;
+      }
+      candidates.putIfAbsent(signature, () => reading);
+    }
+    final winners = candidates.values
+        .where(
+          (reading) => evidence(
+            reading,
+            readings,
+            confidence,
+            fixedUnit: fixedUnit,
+          ).sufficient,
+        )
+        .toList();
+    return winners.length == 1 ? winners.single : null; // 无唯一共识属于待复核状态。
   }
 
   static bool sameFixedUnitNumber(String expected, String raw, String unit) {

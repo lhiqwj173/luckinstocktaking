@@ -1,0 +1,580 @@
+{
+  "sourcePackage": "stock-debug-FA86A32C-ECFF-43E7-B49C-0E4120114889.zip",
+  "products": [
+    {
+      "id": "GS03522-04",
+      "code": "GS03522-04",
+      "name": "领航速冻调制芒果浆",
+      "specification": "1kg*12瓶/箱",
+      "units": [
+        "瓶",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "GS03522-07",
+      "code": "GS03522-07",
+      "name": "领航速冻调制芒果浆",
+      "specification": "1.1kg*12瓶/箱",
+      "units": [
+        "瓶",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "GS03846-04",
+      "code": "GS03846-04",
+      "name": "瑞幸耶加雪菲咖啡豆",
+      "specification": "250g*10袋/箱",
+      "units": [
+        "袋",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "GS09520-01",
+      "code": "GS09520-01",
+      "name": "鑫国黄油餐包（面包）",
+      "specification": "120g*6个*6包/箱（新）",
+      "units": [
+        "个",
+        "包",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "GS09626-02",
+      "code": "GS09626-02",
+      "name": "莱卡尔牛肉芝士贝果三明治（面包）",
+      "specification": "90g*8个*8包/箱",
+      "units": [
+        "个",
+        "包",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "GS09898-01",
+      "code": "GS09898-01",
+      "name": "鑫国抹茶乳酪贝果（面包）",
+      "specification": "90g*8个*8包/箱",
+      "units": [
+        "个",
+        "包",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "GS10378-01",
+      "code": "GS10378-01",
+      "name": "领航速冻调制缤纷水果复合果汁制品",
+      "specification": "1.1kg*12瓶/箱",
+      "units": [
+        "瓶",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "GS10667-01",
+      "code": "GS10667-01",
+      "name": "鑫国经典提拉米苏杯子蛋糕（糕点）",
+      "specification": "55g*9个*12盒/箱",
+      "units": [
+        "个",
+        "盒",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "GS10719-01",
+      "code": "GS10719-01",
+      "name": "祯祥浓醇生巧半熟芝士蛋糕（糕点）",
+      "specification": "38g*10个*12盒/箱",
+      "units": [
+        "个",
+        "盒",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "GS10721-01",
+      "code": "GS10721-01",
+      "name": "扬雅-苹果杏复合果汁饮料浓浆",
+      "specification": "1.1kg*12瓶/箱",
+      "units": [
+        "瓶",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "GS10744-01",
+      "code": "GS10744-01",
+      "name": "鑫国蓝莓乳酪贝果（面包）",
+      "specification": "90g*8个*8包/箱",
+      "units": [
+        "个",
+        "包",
+        "箱"
+      ],
+      "aliases": [],
+      "category": "goods"
+    },
+    {
+      "id": "prepared:【巧克力预调液-新】-预制作",
+      "code": "",
+      "name": "【巧克力预调液-新】-预制作",
+      "specification": "",
+      "units": [
+        "克"
+      ],
+      "aliases": [],
+      "category": "prepared"
+    },
+    {
+      "id": "prepared:【香水柠檬-清洗（全国）】预处理",
+      "code": "",
+      "name": "【香水柠檬-清洗（全国）】预处理",
+      "specification": "",
+      "units": [
+        "个"
+      ],
+      "aliases": [],
+      "category": "prepared"
+    },
+    {
+      "id": "prepared:青金桔-预制作",
+      "code": "",
+      "name": "青金桔-预制作",
+      "specification": "",
+      "units": [
+        "个"
+      ],
+      "aliases": [],
+      "category": "prepared"
+    }
+  ],
+  "rows": [
+    {
+      "rowNumber": 21,
+      "line": {
+        "cells": [
+          "鑫国经典提拉米苏杯子蛋糕（糕点）\n55g*9个*12盒/箱\nGS10667-01",
+          "总库存：4个\n冷藏：-盒1个\n冷冻：-盒3个"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS10667-01",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "总库存：4个\n冷藏：-盒1个\n冷冻：-盒3个",
+          "总库存：4个\n冷藏：-盒1个",
+          "总库存：4个\n冷藏：-盒1个\n冷冻：-盒3个",
+          "总库存：4个\n冷藏：-盒1个\n冷冻：-盒3个"
+        ],
+        "inventoryConfidence": 0.5,
+        "sourceCells": [
+          "鑫国经典提拉米苏杯子蛋糕\n（糕点）55g*9个*12盒/箱\nGS10667-01",
+          "总库存：4个\n冷藏：-盒1个\n冷冻：-盒3个"
+        ],
+        "sourceTop": 3306.0,
+        "sourceBottom": 3486.0
+      }
+    },
+    {
+      "rowNumber": 26,
+      "line": {
+        "cells": [
+          "祯祥浓醇生巧半熟芝士蛋糕（糕点）\n38g*10个*12盒/箱\nGS10719-01",
+          "总库存：13个\n冷藏：-盒0个\n冷冻：1盒3个"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS10719-01",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "总库存：13个\n冷藏：-盒0个\n冷冻：1盒3个",
+          "冷藏：-盒0个\n冷冻：1盒3个",
+          "总库存：13个\n冷藏：-盒0个\n冷冻：1盒3个",
+          "总库存：13个\n冷藏：-盒0个\n冷冻：1盒3个"
+        ],
+        "inventoryConfidence": 0.5,
+        "sourceCells": [
+          "祯祥浓醇生巧半熟芝士蛋糕\n（糕点）38g*10个*12盒/箱\nGS10719-01",
+          "总库存：13个\n冷藏：-盒0个\n冷冻：1盒3个"
+        ],
+        "sourceTop": 4132.0,
+        "sourceBottom": 4312.0
+      }
+    },
+    {
+      "rowNumber": 27,
+      "line": {
+        "cells": [
+          "扬雅-苹果杏复合果汁饮料浓浆\n1.1kg*12瓶/箱\nGS10721-01",
+          "总库存：3.8瓶\n冷藏：1.8瓶\n冷冻：2瓶"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS10721-01",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "总库存：3.8瓶\n冷藏：1.8瓶\n冷冻：2瓶",
+          "总库存：3.8瓶\n冷藏：1.8瓶\n冷冻：2瓶）",
+          "总库存：3.8瓶\n冷藏：1.8瓶\n冷冻：2瓶",
+          "总库存：3.8瓶\n冷藏：1.8瓶\n冷冻：2瓶"
+        ],
+        "inventoryConfidence": 0.30000001192092896,
+        "sourceCells": [
+          "扬雅-苹果杏复合果汁饮料浓浆\n1.1kg*12瓶/箱\nGS10721-01",
+          "总库存：3.8瓶\n冷藏：1.8瓶\n冷冻：2瓶"
+        ],
+        "sourceTop": 4312.0,
+        "sourceBottom": 4492.0
+      }
+    },
+    {
+      "rowNumber": 34,
+      "line": {
+        "cells": [
+          "鑫国蓝莓乳酪贝果（面包）\n90g*8个*8包/箱\nGS10744-01",
+          "总库存：19个\n冷藏：-包7个\n冷冻：1包4个"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS10744-01",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "总库存：19个\n冷藏：-包7个\n冷冻：1包4个",
+          "总库存：19个\n冷冻：1包4个",
+          "总库存：19个\n冷藏：-包7个\n冷冻：1包4个",
+          "总库存：19个\n冷藏：-包7个\n冷冻：1包4个"
+        ],
+        "inventoryConfidence": 0.5,
+        "sourceCells": [
+          "鑫国蓝莓乳酪贝果（面包）\n90g*8个*8包/箱\nGS10744-01",
+          "总库存：19个\n冷藏：-包7个\n冷冻：1包4个"
+        ],
+        "sourceTop": 5350.0,
+        "sourceBottom": 5530.0
+      }
+    },
+    {
+      "rowNumber": 49,
+      "line": {
+        "cells": [
+          "鑫国黄油餐包（面包）\n120g*6个*6包/箱（新）\nGS09520-01",
+          "总库存：8个\n冷藏：-包2个\n冷冻：1包0个"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS09520-01",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "总库存：8个\n冷藏：-包2个\n冷冻：1包0个",
+          "总库存：8个\n冷藏：-包2个\n冷冻：1包0个",
+          "总库存：8个\n冷藏：-包2个\n冷冻：1包0个",
+          "总库存：8个\n冷藏：-包2个\n冷冻：1包0个"
+        ],
+        "inventoryConfidence": 0.5,
+        "sourceCells": [
+          "鑫国黄油餐包（面包）120g*6\n个*6包/箱（新）\nGS09520-01",
+          "总库存：8个\n冷藏：-包2个\n冷冻：1包0个"
+        ],
+        "sourceTop": 7680.0,
+        "sourceBottom": 7860.0
+      }
+    },
+    {
+      "rowNumber": 51,
+      "line": {
+        "cells": [
+          "鑫国抹茶乳酪贝果（面包）\n90g*8个*8包/箱\nGS09898-01",
+          "总库存：15个\n冷藏：-包6个\n冷冻：1包1个"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS09898-01",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "总库存：15个\n冷藏：-包6个\n冷冻：1包1个",
+          "冷藏：-包6个\n冷冻：1包1个",
+          "总库存：15个\n冷藏：-包6个\n冷冻：1包1个",
+          "总库存：15个\n冷藏：-包6个\n冷冻：1包1个"
+        ],
+        "inventoryConfidence": 0.5,
+        "sourceCells": [
+          "鑫国抹茶乳酪贝果（面包）\n90g*8个*8包/箱\nGS09898-01",
+          "总库存：15个\n冷藏：-包6个\n冷冻：1包1个"
+        ],
+        "sourceTop": 8040.0,
+        "sourceBottom": 8220.0
+      }
+    },
+    {
+      "rowNumber": 54,
+      "line": {
+        "cells": [
+          "莱卡尔牛肉芝士贝果三明治（面包）\n90g*8个*8包/箱\nGS09626-02",
+          "总库存：2个\n冷藏：-包2个\n冷冻：-包0个"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS09626-02",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "总库存：2个\n冷藏：-包2个\n冷冻：-包0个",
+          "总库存：2个\n冷藏：-包2个",
+          "总库存：2个\n冷藏：-包2个\n冷冻：-包0个",
+          "总库存：2个\n冷藏：-包2个\n冷冻：-包0个"
+        ],
+        "inventoryConfidence": 0.5,
+        "sourceCells": [
+          "莱卡尔牛肉芝士贝果三明治\n（面包）90g*8个*8包/箱\nGS09626-02",
+          "总库存：2个\n冷藏：-包2个\n冷冻：-包0个"
+        ],
+        "sourceTop": 8580.0,
+        "sourceBottom": 8760.0
+      }
+    },
+    {
+      "rowNumber": 75,
+      "line": {
+        "cells": [
+          "领航速冻调制芒果浆\n1kg*12瓶/箱\nGS03522-04",
+          "总库存：2.3瓶\n冷藏：2.3瓶\n冷冻：0瓶"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS03522-04",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "总库存：2.3瓶\n冷藏：2.3瓶\n冷冻：0瓶",
+          "总库存：2.3瓶\n冷藏：2.3瓶\n芬一\n冷冻：0瓶",
+          "总库存：2.3瓶\n冷藏：2.3瓶\n冷冻：0瓶",
+          "总库存：2.3瓶\n冷藏：2.3瓶\n冷冻：0瓶"
+        ],
+        "inventoryConfidence": 0.30000001192092896,
+        "sourceCells": [
+          "领航 速冻调制芒果浆 1kg*12\n瓶/箱\nGS03522-04",
+          "总库存：2.3瓶\n冷藏：2.3瓶\n冷冻：0瓶"
+        ],
+        "sourceTop": 12024.0,
+        "sourceBottom": 12204.0
+      }
+    },
+    {
+      "rowNumber": 76,
+      "line": {
+        "cells": [
+          "领航速冻调制芒果浆\n1.1kg*12瓶/箱\nGS03522-07",
+          "总库存：2瓶\n冷藏：0瓶\n冷冻：2瓶"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS03522-07",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "总库存：2瓶\n冷藏：0瓶\n冷冻：2瓶",
+          "总库存：2瓶\n冷藏：0瓶\n7.\n冷冻：2瓶",
+          "总库存：2瓶\n冷藏：0瓶\n冷冻：2瓶",
+          "总库存：2瓶\n冷藏：0瓶\n冷冻：2瓶"
+        ],
+        "inventoryConfidence": 0.30000001192092896,
+        "sourceCells": [
+          "领航 速冻调制芒果浆 1.1kg*12\n瓶/箱\nGS03522-07",
+          "总库存：2瓶\n冷藏：0瓶\n冷冻：2瓶"
+        ],
+        "sourceTop": 12204.0,
+        "sourceBottom": 12384.0
+      }
+    },
+    {
+      "rowNumber": 79,
+      "line": {
+        "cells": [
+          "领航速冻调制缤纷水果复合果汁制品\n1.1kg*12瓶/箱\nGS10378-01",
+          "总库存：2.8瓶\n冷藏：1.8瓶\n冷冻：1瓶"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS10378-01",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "总库存：2.8瓶\n冷藏：1.8瓶\n冷冻：1瓶",
+          "总库存：2.8瓶\n冷冻：1瓶",
+          "总库存：2.8瓶\n冷藏：1.8瓶\n冷冻：1瓶",
+          "总库存：2.8瓶\n冷藏：1.8瓶\n冷冻：1瓶"
+        ],
+        "inventoryConfidence": 0.5,
+        "sourceCells": [
+          "领航 速冻调制缤纷水果复合果\n汁制品 1.1kg*12瓶/箱\nGS10378-01",
+          "总库存：2.8瓶\n冷藏：1.8瓶\n冷冻：1瓶"
+        ],
+        "sourceTop": 12744.0,
+        "sourceBottom": 12924.0
+      }
+    },
+    {
+      "rowNumber": 86,
+      "line": {
+        "cells": [
+          "瑞幸耶加雪菲咖啡豆\n250g*10袋/箱\nGS03846-04",
+          "-箱4.5袋"
+        ],
+        "confidence": 1.0,
+        "inventoryUncertain": false,
+        "category": "goods",
+        "productId": "GS03846-04",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "-箱4.5袋",
+          "-箱4.5袋\n本”",
+          "-箱4.5袋",
+          "-箱4.5袋"
+        ],
+        "inventoryConfidence": 0.30000001192092896,
+        "sourceCells": [
+          "瑞幸耶加雪菲咖啡豆250g*10\n袋/箱\nGS03846-04",
+          "-箱4.5袋"
+        ],
+        "sourceTop": 13819.0,
+        "sourceBottom": 13962.0
+      }
+    },
+    {
+      "rowNumber": 180,
+      "line": {
+        "cells": [
+          "青金桔-预制作",
+          "12个"
+        ],
+        "confidence": 0.30000001192092896,
+        "inventoryUncertain": false,
+        "category": "prepared",
+        "productId": "prepared:青金桔-预制作",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "12个",
+          "12个",
+          "12个"
+        ],
+        "inventoryConfidence": 0.30000001192092896,
+        "sourceCells": [
+          "青金桔-预制作",
+          "12个"
+        ],
+        "sourceTop": 27074.302867813567,
+        "sourceBottom": 27188.00000011388
+      }
+    },
+    {
+      "rowNumber": 182,
+      "line": {
+        "cells": [
+          "【香水柠檬-清洗（全国）】预处理",
+          "7TX"
+        ],
+        "confidence": 0.30000001192092896,
+        "inventoryUncertain": true,
+        "category": "prepared",
+        "productId": "prepared:【香水柠檬-清洗（全国）】预处理",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "7",
+          "7个材引"
+        ],
+        "inventoryConfidence": 0.30000001192092896,
+        "sourceCells": [
+          "【香水柠檬-清洗（全国）】预\n处理",
+          "7TX"
+        ],
+        "sourceTop": 27267.5,
+        "sourceBottom": 27376.84374975796
+      }
+    },
+    {
+      "rowNumber": 184,
+      "line": {
+        "cells": [
+          "【巧克力预调液-新】-预制作",
+          "0克"
+        ],
+        "confidence": 0.5,
+        "inventoryUncertain": false,
+        "category": "prepared",
+        "productId": "prepared:【巧克力预调液-新】-预制作",
+        "identityConfirmed": true,
+        "inventoryConfirmed": false,
+        "autoConfirmed": false,
+        "inventoryReadings": [
+          "0克",
+          "0克",
+          "0克"
+        ],
+        "inventoryConfidence": 0.5,
+        "sourceCells": [
+          "【巧克力预调液-新】-预制作",
+          "0克"
+        ],
+        "sourceTop": 27454.08866281288,
+        "sourceBottom": 27559.479651759757
+      }
+    }
+  ]
+}

@@ -36,7 +36,7 @@ class StockProduct {
 
   /// 仅从已核实规格的连续包装链提取换算；克数、长度不作库存单位推断。
   Map<String, BigInt> get inventoryUnitFactors {
-    final spec = productKey(specification);
+    final spec = productKey(specification).replaceFirst(RegExp(r'（新）$'), '');
     final slash = spec.split('/');
     if (slash.length != 2 || !units.contains(slash.last)) return {};
     final unitPattern =
@@ -424,6 +424,22 @@ StockLine _reconcileStockLine(StockLine line, List<StockProduct> products) {
       ? matched.units.single
       : null;
   var quantityText = line.cells[1];
+  if (!line.inventoryConfirmed || line.autoConfirmed) {
+    final requireSections = [
+      quantityText,
+      ...line.inventoryReadings,
+    ].any((value) => RegExp(r'冷藏|冷冻').hasMatch(value));
+    final winner = StockInventory.consensus(
+      line.inventoryReadings,
+      line.inventoryConfidence,
+      fixedUnit: fixedUnit,
+      allowedUnits: matched.units,
+      requireSections: requireSections,
+    );
+    if (winner != null && !StockInventory.sameReading(quantityText, winner)) {
+      quantityText = winner;
+    }
+  }
   if (fixedUnit != null && !line.inventoryConfirmed) {
     final complete = line.inventoryReadings.where((value) {
       final parsed = StockInventory.parse(value);
@@ -546,7 +562,7 @@ StockLine _reconcileStockLine(StockLine line, List<StockProduct> products) {
       explicitPlaceholder(inventory.parts['库存']!);
   final quantityConfirmed =
       quantityValid &&
-      (line.inventoryConfirmed ||
+      ((line.inventoryConfirmed && !line.autoConfirmed) ||
           (agreed &&
               noDuplicateAmounts &&
               completeSections &&

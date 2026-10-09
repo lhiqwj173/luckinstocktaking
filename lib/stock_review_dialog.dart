@@ -211,7 +211,7 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
               if (!widget.line.ready &&
                   widget.line.inventoryEvidence.conflicting > 0)
                 Text(
-                  '当前库存：${widget.line.cells[1]}\n不同的读数：${widget.line.conflictingInventoryReadings.take(2).join('；')}\n三次一致也可能重复同一识别错误，因此保留此数字疑点。',
+                  '当前库存：${widget.line.cells[1]}\n不同的读数：${widget.line.conflictingInventoryReadings.take(2).join('；')}\n存在异读时，至少需要五次完整一致且占有效读数的80%，请对照原图核对。',
                 ),
               if (widget.line.inventoryReadings.isNotEmpty)
                 ExpansionTile(
@@ -230,6 +230,8 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
                         title: Text(
                           '第 ${index + 1} 次：${StockInventory.sameReading(widget.line.inventoryReadings[index], widget.line.cells[1])
                               ? '格式统一后与当前库存一致'
+                              : StockInventory.partialReading(widget.line.cells[1], widget.line.inventoryReadings[index])
+                              ? '仅漏读分区，已读内容一致，未计入有效读数'
                               : StockInventory.contaminatedVariant(widget.line.cells[1], widget.line.inventoryReadings[index])
                               ? '完整库存旁混入独立片段，未计入有效读数'
                               : StockInventory.noiseVariant(widget.line.cells[1], widget.line.inventoryReadings[index])

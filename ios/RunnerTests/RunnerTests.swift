@@ -89,7 +89,7 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(result.inventoryConfidence, 0.5)
     XCTAssertEqual(result.cells, original.cells)
     let missing = StockHistoryProcessor.appendFocusedInventoryReadings(original, raw: [], clean: [cell])
-    XCTAssertNil(missing.inventoryConfidence)
+    XCTAssertEqual(missing.inventoryConfidence, 0.5)
     XCTAssertEqual(missing.inventoryReadings, ["1.5袋", "15袋", "", "1.5袋"])
   }
 
@@ -129,7 +129,27 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(StockHistoryProcessor.appendFocusedInventoryReadings(original, raw: [cell], clean: [different]).inventoryConfidence)
     let noOriginal = StockTextLine(cells: ["测试商品", "-袋5个"], confidence: 0.9,
       inventoryReadings: ["", ""], inventoryConfidence: nil)
-    XCTAssertNil(StockHistoryProcessor.appendFocusedInventoryReadings(noOriginal, raw: [cell], clean: [cell]).inventoryConfidence)
+    XCTAssertEqual(StockHistoryProcessor.appendFocusedInventoryReadings(noOriginal, raw: [cell], clean: [cell]).inventoryConfidence, 0.9)
+  }
+
+  func testInventoryConsensusStopsOnStableVotesAndRequiresMoreVotesForDisagreement() {
+    func row(_ readings: [String], confidence: Double = 0.3, category: String = "goods") -> StockTextLine {
+      StockTextLine(cells: ["测试", readings.first!], confidence: confidence,
+        category: category, inventoryReadings: readings, inventoryConfidence: confidence)
+    }
+    XCTAssertTrue(StockHistoryProcessor.hasInventoryConsensus(row(["12个", "12个", "12个"], category: "prepared")))
+    XCTAssertFalse(StockHistoryProcessor.hasInventoryConsensus(row(["12个", "12个"], category: "prepared")))
+    XCTAssertFalse(StockHistoryProcessor.hasInventoryConsensus(row(["7TX", "7TX", "7TX"], category: "prepared")))
+    XCTAssertFalse(StockHistoryProcessor.hasInventoryConsensus(row(["水印", "水印", "水印"])))
+    XCTAssertFalse(StockHistoryProcessor.hasInventoryConsensus(row(["1盒", "15盒", "1盒", "1盒"])))
+    XCTAssertTrue(StockHistoryProcessor.hasInventoryConsensus(row(["15盒", "1盒", "1盒", "1盒", "1盒", "1盒"])))
+    XCTAssertFalse(StockHistoryProcessor.hasInventoryConsensus(row(["15盒", "15盒", "1盒", "1盒", "1盒", "1盒", "1盒"])))
+    XCTAssertTrue(StockHistoryProcessor.hasInventoryConsensus(row(["1盒", "1盒"], confidence: 0.9)))
+    XCTAssertFalse(StockHistoryProcessor.hasInventoryConsensus(row(["1盒", "1盒", "1盒"], confidence: 0)))
+    let partial = "总库存：3盒\n冷藏：1盒"
+    XCTAssertFalse(StockHistoryProcessor.hasInventoryConsensus(row([partial, partial, partial])))
+    let full = "总库存：3盒\n冷藏：1盒\n冷冻：2盒"
+    XCTAssertTrue(StockHistoryProcessor.hasInventoryConsensus(row([full, full, full])))
   }
 
   func testProductSeedPreservesUserChangesAndDeletedEntries() throws {

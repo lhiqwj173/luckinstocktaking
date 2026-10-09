@@ -125,6 +125,7 @@ class StockLine {
       .where(
         (reading) =>
             !StockInventory.sameReading(cells[1], reading) &&
+            !StockInventory.partialReading(cells[1], reading) &&
             !StockInventory.noiseVariant(cells[1], reading) &&
             !StockInventory.contaminatedVariant(cells[1], reading) &&
             (StockInventory.readingSignature(reading) != null ||

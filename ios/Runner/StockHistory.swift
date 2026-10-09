@@ -1351,7 +1351,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 23
+  static let recognitionRevision = 24
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -2085,14 +2085,26 @@ enum StockHistoryProcessor {
         if let evidence = preparedEvidence[start] {
           preparedRows[index].inventoryReadings = evidence.0
           preparedRows[index].inventoryConfidence = evidence.1
-          continue // 保留实际局部复读，不让混入水印的整列读数覆盖已验证的数量。
+        } else {
+          let crop = CGRect(x: quantityX, y: start, width: CGFloat(cg.width) - quantityX,
+            height: min(Double(cg.height), end) - start)
+          let raw = try inventoryRow(cg, crop: crop, scale: 2).sorted { $0.box.minX < $1.box.minX }
+          let clean = try inventoryRow(faintText, crop: crop, scale: 2).sorted { $0.box.minX < $1.box.minX }
+          preparedRows[index].inventoryReadings = [raw.map(\.text).joined(), clean.map(\.text).joined()]
+          preparedRows[index].inventoryConfidence = (raw + clean).map(\.confidence).min()
         }
+        // 预制浅灰输入框继续以不同倍率复读，保留先前全部证据，最多增加六次。
         let crop = CGRect(x: quantityX, y: start, width: CGFloat(cg.width) - quantityX,
           height: min(Double(cg.height), end) - start)
-        let raw = try inventoryRow(cg, crop: crop, scale: 2).sorted { $0.box.minX < $1.box.minX }
-        let clean = try inventoryRow(faintText, crop: crop, scale: 2).sorted { $0.box.minX < $1.box.minX }
-        preparedRows[index].inventoryReadings = [raw.map(\.text).joined(), clean.map(\.text).joined()]
-        preparedRows[index].inventoryConfidence = (raw + clean).map(\.confidence).min()
+        for scale in [3, 4, 5] {
+          if hasInventoryConsensus(preparedRows[index]) { break }
+          progress("正在投票复核预制库存 · \(index + 1)/\(preparedRows.count)")
+          let raw = try inventoryRow(cg, crop: crop, scale: scale, horizontalOrder: true,
+            diagnosticContext: "预制投票原图")
+          let enhanced = try inventoryRow(faintText, crop: crop, scale: scale, horizontalOrder: true,
+            diagnosticContext: "预制投票浅灰增强")
+          preparedRows[index] = appendFocusedInventoryReadings(preparedRows[index], raw: raw, clean: enhanced)
+        }
       }
       StockDiagnostics.log("预制行完成 rows=\(preparedRows.count)")
       return goods + preparedRows
@@ -2125,7 +2137,7 @@ enum StockHistoryProcessor {
     }
   }
 
-  /// 仅疑点行裁切数量区复读：保留批次读数，不用多数票掩盖真实数字冲突。
+  /// 疑点行有界追加不同裁剪和倍率的真实复读，最终投票和合计由 Dart 规则核验。
   static func focusedInventoryEvidence(_ rows: [StockTextLine], original: CGImage, clean: CGImage,
     columnX: Int, primary: [StockOCRCell], progress: (String) -> Void) throws -> [StockTextLine] {
     var output = rows
@@ -2153,12 +2165,48 @@ enum StockHistoryProcessor {
         let enhanced = try inventoryRow(clean, crop: crop, scale: 4,
           diagnosticContext: "库存局部增强图")
         output[index] = appendFocusedInventoryReadings(row, raw: raw, clean: enhanced)
+        for scale in [2, 4, 5] {
+          if hasInventoryConsensus(output[index]) { break }
+          progress("正在投票复核库存 · \(index + 1)/\(rows.count)")
+          // 扩大为整个行带，避免首轮文本边界遗漏冷藏/冷冻；改变倍率及去水印方式。
+          let extraRaw = try inventoryRow(original, crop: band, scale: scale,
+            diagnosticContext: "库存投票整行原图")
+          let extraClean = try inventoryRow(clean, crop: band, scale: scale,
+            diagnosticContext: "库存投票整行增强图")
+          output[index] = appendFocusedInventoryReadings(output[index], raw: extraRaw, clean: extraClean)
+        }
         retried += 1
         StockDiagnostics.log("库存局部复核 row=\(index + 1) name=\(row.cells[0]) readings=\(output[index].inventoryReadings ?? []) confidence=\(output[index].inventoryConfidence.map { String($0) } ?? "missing")")
       }
     }
     StockDiagnostics.log("库存局部复核完成 总行数=\(rows.count) 复核行数=\(retried)")
     return output
+  }
+
+  /// 仅用于停止额外 OCR；不确认盘点行，也不替代档案单位和分区合计校验。
+  static func hasInventoryConsensus(_ row: StockTextLine) -> Bool {
+    guard let confidence = row.inventoryConfidence, confidence > 0 else { return false }
+    let readings = row.inventoryReadings ?? []
+    func normalize(_ text: String) -> String {
+      StockOCRRefinement.compact(text).replacingOccurrences(of: "：", with: ":")
+    }
+    let normalized = readings.map(normalize)
+    let sections = normalized.contains { $0.contains("冷藏") || $0.contains("冷冻") }
+    var votes: [String: Int] = [:]
+    for value in normalized where !value.isEmpty {
+      if sections && !["总库存:", "冷藏:", "冷冻:"].allSatisfy({ value.contains($0) }) { continue }
+      let quantity = value.replacingOccurrences(of: "(?:总库存|冷藏|冷冻):", with: "", options: .regularExpression)
+      let unit = "(?:毫升|个|盒|包|袋|箱|瓶|桶|卷|捆|组|支|克|斤|升|米|张|片|根|份|罐|把|提|条|套|只|杯|ml|kg|g|L)"
+      if quantity.range(of: "^(?:[0-9]+(?:\\.[0-9]+)?\(unit)|[-－—]+\(unit)?)+$", options: .regularExpression) == nil { continue }
+      if row.category == "prepared",
+        value.range(of: "^[0-9]+(?:\\.[0-9]+)?(?:个|毫升|克)$", options: .regularExpression) == nil { continue }
+      votes[value, default: 0] += 1
+    }
+    guard let support = votes.values.max() else { return false }
+    if support == readings.count {
+      return support >= 3 || (support >= 2 && confidence >= 0.8)
+    }
+    return support >= 5 && support * 5 >= readings.count * 4
   }
 
   static func appendFocusedInventoryReadings(_ original: StockTextLine, raw: [StockOCRCell], clean: [StockOCRCell]) -> StockTextLine {
@@ -2168,16 +2216,14 @@ enum StockHistoryProcessor {
         .map(\.text).joined(separator: "\n")
     }
     row.inventoryReadings = (row.inventoryReadings ?? []) + [text(raw), text(clean)]
-    if let initial = row.inventoryConfidence, let first = raw.map(\.confidence).min(),
-      let second = clean.map(\.confidence).min() {
-      row.inventoryConfidence = min(initial, min(first, second))
+    if let initial = row.inventoryConfidence {
+      // 漏读是弃权；一次空结果不能抹掉前面实际测得的证据评分。
+      let measured = (raw + clean).map(\.confidence)
+      row.inventoryConfidence = measured.reduce(initial, min)
     } else if let first = raw.map(\.confidence).min(), let second = clean.map(\.confidence).min(),
       !text(raw).isEmpty, StockOCRRefinement.compact(text(raw)) == StockOCRRefinement.compact(text(clean)),
-      StockOCRRefinement.compact(text(raw)) == StockOCRRefinement.compact(row.cells[1]),
-      (original.inventoryReadings ?? []).contains(where: {
-        StockOCRRefinement.compact($0) == StockOCRRefinement.compact(row.cells[1])
-      }) {
-      // 批次漏读没有评分；只采用两次真实局部读数的评分，三次一致由共享规则核验。
+      !text(clean).isEmpty {
+      // 批次漏读没有评分；两次实际局部读数一致时记录真实评分，最终由共享规则投票。
       row.inventoryConfidence = min(first, second)
     } else { row.inventoryConfidence = nil }
     return row
