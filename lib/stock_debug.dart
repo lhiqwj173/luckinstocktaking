@@ -19,10 +19,11 @@ Map<String, dynamic> stockDebugReport(
     'schemaVersion': 1,
     'exportedAt': DateTime.now().toUtc().toIso8601String(),
     'matchingPolicy': {
-      'revision': 'generic-edit-distance-v1',
+      'revision': 'generic-edit-distance-v2',
       'goods': '准确唯一货号；相似度至少85%，或至少4字符文本仅差1字符；规格冲突阻断',
       'prepared': '相似度至少90%；唯一精确匹配或领先第二候选至少10个百分点',
       'inventory': '独立核验实际复读；匹配相似度不用于修改库存数字',
+      'revalidation': '自动确认行重新使用原始 OCR 名称核验；人工搜索支持名称、别名和货号片段，不自动确认',
     },
     'currentDocument': document.toJson(),
     'products': products.map((product) => product.toJson()).toList(),

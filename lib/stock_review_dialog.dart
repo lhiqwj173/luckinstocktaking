@@ -118,7 +118,7 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
   @override
   Widget build(BuildContext context) {
     final candidates = _choosingProduct
-        ? matchProducts(_search.text, widget.line.category, _products)
+        ? searchProducts(_search.text, widget.line.category, _products)
         : <ProductCandidate>[];
     return AlertDialog(
       title: const Text('确认货物与库存'),

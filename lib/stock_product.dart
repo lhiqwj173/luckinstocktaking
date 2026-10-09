@@ -256,6 +256,17 @@ List<ProductCandidate> matchProducts(
   List<StockProduct> products,
 ) {
   validateProducts(products);
+  return _matchProducts(raw, category, products);
+}
+
+List<ProductCandidate> _matchProducts(
+  String raw,
+  String category,
+  List<StockProduct> products,
+) {
+  if (!['goods', 'prepared'].contains(category)) {
+    throw ArgumentError.value(category, 'category', '未知货物类别');
+  }
   final codes = _codePattern
       .allMatches(raw)
       .map((match) => productKey(match.group(0)!).toUpperCase())
@@ -297,12 +308,67 @@ List<ProductCandidate> matchProducts(
   return candidates.take(5).toList();
 }
 
+/// 人工搜索允许名称、别名和货号片段；搜索排名不作为自动确认的证据。
+List<ProductCandidate> searchProducts(
+  String raw,
+  String category,
+  List<StockProduct> products,
+) {
+  validateProducts(products);
+  final evidence = _matchProducts(raw, category, products);
+  final key = productKey(raw);
+  if (key.isEmpty) return [];
+  final ranked = <(int, double, ProductCandidate)>[];
+  for (final product in products.where((p) => p.category == category)) {
+    final names = [product.name, ...product.aliases].map(productKey);
+    final code = productKey(product.code);
+    final exact = names.contains(key) || (code.isNotEmpty && code == key);
+    final contains =
+        names.any((name) => name.contains(key)) ||
+        (code.isNotEmpty && code.contains(key));
+    final fuzzy = names
+        .map((name) => _textMatch(key, name).score)
+        .reduce((a, b) => a > b ? a : b);
+    final existing = evidence.where((c) => c.product.id == product.id).toList();
+    if (!contains && fuzzy < .5 && existing.isEmpty) continue;
+    // 展示的相似度仍对应完整 OCR 文本，避免将关键词命中伪装成规格核验通过。
+    final candidate = existing.isNotEmpty ? existing.single : null;
+    final comparison = _textMatch(
+      productKey(raw.replaceAll(_codePattern, '')),
+      productKey(product.name + product.specification),
+    );
+    ranked.add((
+      exact ? 3 : (contains ? 2 : 1),
+      fuzzy,
+      candidate ??
+          ProductCandidate(
+            product,
+            comparison.score,
+            false,
+            comparison.numericConflict,
+            comparison.edits,
+          ),
+    ));
+  }
+  ranked.sort((a, b) {
+    final rank = b.$1.compareTo(a.$1);
+    if (rank != 0) return rank;
+    final score = b.$2.compareTo(a.$2);
+    return score != 0 ? score : a.$3.product.id.compareTo(b.$3.product.id);
+  });
+  return ranked.map((entry) => entry.$3).toList();
+}
+
 /// 自动通过只使用货物身份和实际复读证据，不根据档案补数字。
 StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
   validateProducts(products);
+  return _reconcileStockLine(line, products);
+}
+
+StockLine _reconcileStockLine(StockLine line, List<StockProduct> products) {
   if (line.cells.length != 2) return line;
   StockProduct? matched;
-  if (line.identityConfirmed) {
+  if (line.identityConfirmed && !line.autoConfirmed) {
     final existing = products
         .where(
           (p) =>
@@ -314,8 +380,10 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
     if (existing.length == 1) matched = existing.single;
     if (matched == null) return line.invalidateIdentity();
   } else {
+    // 未确认身份始终从原文匹配，撤销后也不能借已替换的档案名称再次通过。
+    final rawName = line.sourceCells[0];
     if (line.isPrepared) {
-      final candidates = matchProducts(line.cells[0], line.category, products);
+      final candidates = _matchProducts(rawName, line.category, products);
       if (candidates.isNotEmpty &&
           !candidates.first.conflict &&
           candidates.first.score >= .90 &&
@@ -326,14 +394,18 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
       }
     } else {
       // 唯一准确货号定位档案，通用编辑距离核验文本；真实规格数字差异仍阻断。
-      final codes = _codePattern.allMatches(line.cells[0]).toList();
-      if (codes.length != 1) return line;
+      final codes = _codePattern.allMatches(rawName).toList();
+      if (codes.length != 1) {
+        return line.autoConfirmed ? line.invalidateIdentity() : line;
+      }
       final code = productKey(codes.single.group(0)!).toUpperCase();
       final exact = products
           .where((p) => p.category == line.category && p.code == code)
           .toList();
-      if (exact.isEmpty) return line;
-      final first = matchProducts(line.cells[0], line.category, exact).single;
+      if (exact.isEmpty) {
+        return line.autoConfirmed ? line.invalidateIdentity() : line;
+      }
+      final first = _matchProducts(rawName, line.category, exact).single;
       if (first.exactCode &&
           !first.conflict &&
           (first.score >= .85 ||
@@ -345,7 +417,9 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
       }
     }
   }
-  if (matched == null) return line;
+  if (matched == null) {
+    return line.autoConfirmed ? line.invalidateIdentity() : line;
+  }
   final fixedUnit = line.isPrepared && matched.units.length == 1
       ? matched.units.single
       : null;
@@ -396,7 +470,7 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
                 .allMatches(part.raw)
                 .every((match) => matched!.units.contains(match.group(1))),
       );
-  if (line.identityConfirmed && !unitsValid) return line.invalidateIdentity();
+  // 数量单位异常只阻断库存确认，不能撤销已核实的名称和货号。
   final quantityValid =
       unitsValid &&
       !inventory.needsReview &&
@@ -503,8 +577,9 @@ List<StockLine> reconcileStockLines(
   List<StockLine> lines,
   List<StockProduct> products,
 ) {
+  validateProducts(products);
   final reconciled = lines
-      .map((line) => reconcileStockLine(line, products))
+      .map((line) => _reconcileStockLine(line, products))
       .toList();
   final counts = <String, int>{};
   for (final line in reconciled) {

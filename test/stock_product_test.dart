@@ -107,6 +107,86 @@ void main() {
       isEmpty,
     );
   });
+  test('人工搜索支持短关键词、别名、货号片段，不限制为五个候选', () {
+    final products = List.generate(
+      7,
+      (i) => StockProduct(
+        code: 'GS1000${i + 1}-01',
+        name: '测试椰乳品牌$i',
+        specification: '250ml*24盒/箱',
+        units: ['盒', '箱'],
+        aliases: ['椰奶$i'],
+      ),
+    );
+    expect(searchProducts('椰乳', 'goods', products), hasLength(7));
+    expect(searchProducts('椰奶3', 'goods', products).first.product, products[3]);
+    expect(
+      searchProducts('10004', 'goods', products).first.product,
+      products[3],
+    );
+    expect(
+      searchProducts('测试椰乳品脾3', 'goods', products).first.product,
+      products[3],
+    );
+    expect(searchProducts('  ', 'goods', products), isEmpty);
+    expect(searchProducts('椰乳', 'prepared', products), isEmpty);
+    expect(
+      () => searchProducts('椰乳', 'unknown', products),
+      throwsArgumentError,
+    );
+    expect(
+      reconcileStockLine(
+        StockLine(cells: ['椰乳', '1盒'], confidence: 1),
+        products,
+      ).identityConfirmed,
+      false,
+    );
+  });
+  test('自动确认重新检查原始名称，人工确认保留人工选择', () {
+    final catalog = [product('GS10001-01', '1L*12盒/箱')];
+    StockLine confirmed(bool automatic) => StockLine(
+      cells: [catalog.single.display, '1盒'],
+      sourceCells: ['测试椰乳250ml*24盒/箱 GS10001-01', '1盒'],
+      confidence: 1,
+      inventoryReadings: ['1盒', '1盒'],
+      inventoryConfidence: 1,
+      productId: catalog.single.id,
+      identityConfirmed: true,
+      inventoryConfirmed: true,
+      autoConfirmed: automatic,
+    );
+    final result = reconcileStockLine(confirmed(true), catalog);
+    expect(result.identityConfirmed, false);
+    expect(result.autoConfirmed, false);
+    expect(result.sourceCells, confirmed(true).sourceCells);
+    expect(reconcileStockLine(result, catalog).identityConfirmed, false);
+    expect(reconcileStockLine(confirmed(false), catalog).ready, true);
+  });
+  test('库存单位误读不撤销已匹配的品类，重复解析状态稳定', () {
+    final lemon = StockProduct(
+      code: '',
+      name: '【香水柠檬-清洗（全国）】预处理',
+      specification: '',
+      units: ['个'],
+      category: 'prepared',
+    );
+    final raw = StockLine(
+      cells: ['【香水柠檬-清洗（全国）】预\n处理', '7TX'],
+      category: 'prepared',
+      confidence: .3,
+      inventoryUncertain: true,
+      inventoryReadings: ['7', '7个材引'],
+      inventoryConfidence: .3,
+    );
+    final first = reconcileStockLine(raw, [lemon]);
+    final second = reconcileStockLine(first, [lemon]);
+    expect(first.identityConfirmed, true);
+    expect(second.identityConfirmed, true);
+    expect(second.inventoryConfirmed, false);
+    expect(second.ready, false);
+    expect(second.cells, first.cells);
+    expect(second.sourceCells, raw.cells);
+  });
   test('档案导入拒绝重复货号和无效字段，库存不进入档案', () {
     const header = '货号\t名称\t规格\t库存单位\t别名\t类别';
     const row = 'GS10001-01\t测试椰乳\t1L*12盒/箱\t盒、箱\t\t货物';
