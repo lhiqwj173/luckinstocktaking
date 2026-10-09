@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:luckinstocktaking/stock_inventory.dart';
 import 'package:luckinstocktaking/stock_history.dart';
 import 'package:luckinstocktaking/stock_product.dart';
 
@@ -89,7 +90,7 @@ void main() {
         row(readings: ['12盒', '12盒', '12盒', ''], confidence: .5),
         [product],
       ).ready,
-      false,
+      true,
     );
     expect(
       reconcileStockLine(
@@ -213,7 +214,173 @@ void main() {
     expect(() => row(confidence: 1.1), throwsFormatException);
     expect(() => row().inventoryReadings.add('1盒'), throwsUnsupportedError);
   });
-  test('无数字废读数不否决三次完整一致读数，数字冲突和漏读仍阻断', () {
+  test('通用字符对齐允许型号字母误读为数字，真实包装数量冲突仍拒绝', () {
+    final activity = StockProduct(
+      code: 'GS10819-01',
+      name: '9月中旬活动周边',
+      specification: 'I202609YN2个/包',
+      units: ['个', '包'],
+    );
+    final cup = StockProduct(
+      code: 'GS03779-14',
+      name: '12oz双层纸杯-AO热饮杯ZC-',
+      specification: '25个/袋*12袋/箱',
+      units: ['个', '袋', '箱'],
+    );
+    StockLine sample(String name) => StockLine(
+      cells: [name, '-包0个'],
+      confidence: .9,
+      inventoryReadings: ['-包0个', '-包0个'],
+      inventoryConfidence: .95,
+    );
+    expect(
+      reconcileStockLine(sample('9月中旬活动周边\n1202609YN2个/包\nGS10819-01'), [
+        activity,
+        cup,
+      ]).identityConfirmed,
+      true,
+    );
+    expect(
+      reconcileStockLine(sample('120z双层纸杯-AO热饮杯\nZC-25个/袋*12袋/箱\nGS03779-14'), [
+        activity,
+        cup,
+      ]).identityConfirmed,
+      true,
+    );
+    expect(
+      reconcileStockLine(sample('12oz双层纸杯-AO热饮杯\nZC-50个/袋*12袋/箱\nGS03779-14'), [
+        cup,
+      ]).identityConfirmed,
+      false,
+    );
+    final candidates = matchProducts(
+      '9月中旬活动周边1202609YN2个/包 GS10819-01',
+      'goods',
+      [activity, cup],
+    );
+    expect(candidates.map((candidate) => candidate.product.code), [
+      'GS10819-01',
+    ]);
+    expect(candidates.single.conflict, false);
+  });
+  test('通用匹配覆盖汉字、字母、任意替换漏字多字，原图证据不改写', () {
+    final generic = StockProduct(
+      code: 'GS10002-01',
+      name: '通用测试商品型号ABCD',
+      specification: '500ml*12瓶/箱',
+      units: ['瓶', '箱'],
+    );
+    for (final raw in [
+      '通用测式商品型号ABCD500ml*12瓶/箱',
+      '通用测试商品型号AXCD500ml*12瓶/箱',
+      '通用测试商品型号A8CD500ml*12瓶/箱',
+      '通用测试商品型号ACD500ml*12瓶/箱',
+      '通用测试商品型号ABXCD500ml*12瓶/箱',
+    ]) {
+      final source = row(name: '$raw\nGS10002-01', quantity: '1瓶');
+      final candidate = matchProducts(source.cells[0], 'goods', [
+        generic,
+      ]).single;
+      expect(candidate.edits, 1, reason: raw);
+      expect(candidate.conflict, false, reason: raw);
+      final result = reconcileStockLine(source, [generic]);
+      expect(result.ready, true, reason: raw);
+      expect(result.cells[0], generic.display);
+      expect(result.sourceCells, source.cells);
+      expect(result.cells[1], source.cells[1]);
+    }
+    for (final spec in [
+      '500ml*13瓶/箱',
+      '500ml*1瓶/箱',
+      '500ml*112瓶/箱',
+      '500ml*12盒/箱',
+      '50.0ml*12瓶/箱',
+    ]) {
+      final source = row(
+        name: '${generic.name}$spec\nGS10002-01',
+        quantity: '1瓶',
+      );
+      expect(
+        reconcileStockLine(source, [generic]).identityConfirmed,
+        false,
+        reason: spec,
+      );
+    }
+    final short = StockProduct(
+      code: 'GS10003-01',
+      name: '测试商品',
+      specification: '',
+      units: ['盒'],
+    );
+    expect(
+      reconcileStockLine(row(name: '测试商晶 GS10003-01'), [
+        short,
+      ]).identityConfirmed,
+      true,
+    );
+  });
+  test('无货号预制名称用匹配率和领先分差，相近候选不擅自选择', () {
+    final first = StockProduct(
+      code: '',
+      name: '【通用柠檬清洗全国】预处理',
+      specification: '',
+      units: ['个'],
+      category: 'prepared',
+    );
+    final second = StockProduct(
+      code: '',
+      name: '【通用柠檬清洗全园】预处理',
+      specification: '',
+      units: ['个'],
+      category: 'prepared',
+    );
+    StockLine source(String name) => StockLine(
+      cells: [name, '7个'],
+      confidence: .9,
+      category: 'prepared',
+      inventoryReadings: ['7个', '7个'],
+      inventoryConfidence: .95,
+    );
+    final raw = '【通用柠檬清冼全国】预处理';
+    expect(reconcileStockLine(source(raw), [first]).ready, true);
+    expect(
+      reconcileStockLine(source(raw), [first, second]).identityConfirmed,
+      false,
+    );
+    expect(reconcileStockLine(source(first.name), [first, second]).ready, true);
+  });
+  test('预制固定单位只有在另两次完整数量单位读数证实时才恢复无效 ASCII 后缀', () {
+    final prepared = StockProduct(
+      code: '',
+      name: '测试预制',
+      specification: '',
+      units: ['个'],
+      category: 'prepared',
+    );
+    StockLine sample(List<String> readings) => StockLine(
+      cells: [prepared.name, '7TX'],
+      category: 'prepared',
+      confidence: .9,
+      inventoryUncertain: true,
+      inventoryReadings: readings,
+      inventoryConfidence: .95,
+    );
+    final result = reconcileStockLine(sample(['7个', '7个', '7TX']), [prepared]);
+    expect(result.ready, true);
+    expect(result.cells[1], '7个');
+    expect(result.sourceCells[1], '7TX');
+    expect(result.inventoryReadings, ['7个', '7个', '7TX']);
+    expect(reconcileStockLine(sample(['7TX', '7TX']), [prepared]).ready, false);
+    expect(
+      reconcileStockLine(sample(['7个', '7个', '70TX']), [prepared]).ready,
+      false,
+    );
+    expect(
+      reconcileStockLine(sample(['7个', '7个', '7克']), [prepared]).ready,
+      false,
+    );
+  });
+  test('废读和漏读不否决三次完整一致读数，独立数字冲突仍阻断', () {
     expect(
       reconcileStockLine(
         row(quantity: '1盒', readings: ['1盒', '季', '1盒', '1盒'], confidence: .4),
@@ -221,7 +388,7 @@ void main() {
       ).ready,
       true,
     );
-    for (final noise in ['6', '15盒', '-盒', '', '1瓶', '一盒']) {
+    for (final noise in ['6', '15盒', '-盒', '1瓶', '一盒']) {
       expect(
         reconcileStockLine(
           row(
@@ -252,6 +419,63 @@ void main() {
         [product],
       ).ready,
       false,
+    );
+  });
+  test('完整库存旁混入独立片段不算冲突，也不能代替完整支持证据', () {
+    for (final pair in [
+      ['8.4袋', '26\n8.4袋\n李'],
+      ['-盒0个', '6\n-盒0个'],
+      ['-袋5个', ''],
+    ]) {
+      final expected = pair[0], polluted = pair[1];
+      final proof = StockInventory.evidence(expected, [
+        expected,
+        polluted,
+        expected,
+        expected,
+      ], .4);
+      expect(proof.supporting, 3);
+      expect(proof.abstentions, 1);
+      expect(proof.conflicting, 0);
+      expect(proof.sufficient, true);
+      expect(
+        StockInventory.evidence(expected, [expected, polluted], .99).sufficient,
+        false,
+      );
+      expect(
+        StockInventory.evidence(expected, [
+          expected,
+          polluted,
+          expected,
+          expected,
+        ], null).sufficient,
+        false,
+      );
+    }
+    for (final conflict in [
+      '26个\n8.4袋',
+      '84袋',
+      '26',
+      '冷藏：26\n8.4袋',
+      '2.6\n8.4袋',
+    ]) {
+      expect(
+        StockInventory.evidence('8.4袋', [
+          '8.4袋',
+          conflict,
+          '8.4袋',
+          '8.4袋',
+        ], .99).sufficient,
+        false,
+        reason: conflict,
+      );
+    }
+    expect(
+      reconcileStockLine(
+        row(quantity: '1盒', readings: ['1盒', '', '1盒', '1盒'], confidence: .4),
+        [product],
+      ).ready,
+      true,
     );
   });
   test('全角数字与排版等价，但不丢单位、小数点和占位符', () {

@@ -116,6 +116,7 @@ struct StockOCRCell {
   let text: String
   let confidence: Double
   let box: CGRect
+  var verifiedReadings: [String] = []
 }
 
 enum StockOCRRefinement {
@@ -1165,7 +1166,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 22
+  static let recognitionRevision = 23
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1783,7 +1784,19 @@ enum StockHistoryProcessor {
         }
       }
       let faintText = try textImage(cg, preserveFaintText: true)
+      var preparedEvidence: [Double: ([String], Double)] = [:]
       var preparedRows = try StockTableParser.preparedRows(prepared) { start, end, quantityLeft in
+        func verified(_ output: [StockOCRCell], first: [StockOCRCell], second: [StockOCRCell]) -> [StockOCRCell] {
+          let text = [first, second].map { $0.sorted { $0.box.minX < $1.box.minX }.map(\.text).joined() }
+          preparedEvidence[Double(start)] = (text, (first + second).map(\.confidence).min()!)
+          return output
+        }
+        func compactVerified(_ number: StockOCRCell, unit: StockOCRCell) -> [StockOCRCell] {
+          if number.verifiedReadings.count >= 2 {
+            preparedEvidence[Double(start)] = (number.verifiedReadings, min(number.confidence, unit.confidence))
+          }
+          return [number, unit]
+        }
         progress("正在复核预制物料数量")
         let y = max(0, start.rounded(.down))
         let x = max(0, quantityLeft.rounded(.down))
@@ -1802,7 +1815,7 @@ enum StockHistoryProcessor {
             value.range(of: "^[0-9]+(?:\\.[0-9]+)?(?:个|毫升|克)$", options: .regularExpression) != nil,
             value == StockOCRRefinement.compact(enhanced.map(\.text).joined()) {
             let confidence = min(raw.map(\.confidence).min()!, enhanced.map(\.confidence).min()!)
-            return raw.map { StockOCRCell(text: $0.text, confidence: min($0.confidence, confidence), box: $0.box) }
+            return verified(raw.map { StockOCRCell(text: $0.text, confidence: min($0.confidence, confidence), box: $0.box) }, first: raw, second: enhanced)
           }
         }
         // 单字符数量常被整行中文识别忽略。依据已识别单位的位置单独裁出数字输入框。
@@ -1811,6 +1824,10 @@ enum StockHistoryProcessor {
             StockOCRRefinement.compact(cell.text).range(of: "^(?:个|毫升|克)$", options: .regularExpression) != nil
         }
         if units.isEmpty, let unit = try recoverPreparedUnit(cg, clean: recognitionImage,
+          cells: prepared, start: start, end: end, quantityLeft: x) {
+          units = [unit]
+        }
+        if units.isEmpty, let unit = try recoverPreparedUnit(cg, clean: faintText,
           cells: prepared, start: start, end: end, quantityLeft: x) {
           units = [unit]
         }
@@ -1828,7 +1845,7 @@ enum StockHistoryProcessor {
           // 对同一真实像素区域读数一致才采用，不对混合字符串做数字替换。
           if let number = try compactPreparedQuantity(cg, numberCrop: numberCrop, unit: unit,
             inkThreshold: 210) {
-            return [number, unit]
+            return compactVerified(number, unit: unit)
           }
           for scale in [2, 4] {
             let raw = try inventoryRow(cg, crop: numberCrop, scale: scale,
@@ -1838,7 +1855,7 @@ enum StockHistoryProcessor {
             if raw.count == 1, enhanced.count == 1,
               StockOCRRefinement.compact(raw[0].text) == StockOCRRefinement.compact(enhanced[0].text) {
               let confidence = min(raw[0].confidence, enhanced[0].confidence)
-              return [StockOCRCell(text: raw[0].text, confidence: confidence, box: raw[0].box), unit]
+              return verified([StockOCRCell(text: raw[0].text, confidence: confidence, box: raw[0].box), unit], first: raw + [unit], second: enhanced + [unit])
             }
           }
           // accurate 按整行推断，孤立单字可能没有观察结果。fast 使用字符检测，
@@ -1854,11 +1871,11 @@ enum StockHistoryProcessor {
               StockOCRRefinement.compact(raw[0].text) == StockOCRRefinement.compact(enhanced[0].text),
               raw[0].box.intersects(enhanced[0].box) {
               let confidence = min(raw[0].confidence, enhanced[0].confidence)
-              return [StockOCRCell(text: raw[0].text, confidence: confidence, box: raw[0].box), unit]
+              return verified([StockOCRCell(text: raw[0].text, confidence: confidence, box: raw[0].box), unit], first: raw + [unit], second: enhanced + [unit])
             }
           }
           if let number = try compactPreparedQuantity(cg, numberCrop: numberCrop, unit: unit) {
-            return [number, unit]
+            return compactVerified(number, unit: unit)
           }
         }
         StockDiagnostics.log("预制数量未恢复 crop=\(crop) unitCount=\(units.count)")
@@ -1872,6 +1889,11 @@ enum StockHistoryProcessor {
       for index in preparedRows.indices {
         guard let start = preparedRows[index].sourceTop, let end = preparedRows[index].sourceBottom else {
           throw StockHistoryError.invalid("预制库存复核缺少行位置")
+        }
+        if let evidence = preparedEvidence[start] {
+          preparedRows[index].inventoryReadings = evidence.0
+          preparedRows[index].inventoryConfidence = evidence.1
+          continue // 保留实际局部复读，不让混入水印的整列读数覆盖已验证的数量。
         }
         let crop = CGRect(x: quantityX, y: start, width: CGFloat(cg.width) - quantityX,
           height: min(Double(cg.height), end) - start)
@@ -1957,6 +1979,14 @@ enum StockHistoryProcessor {
     if let initial = row.inventoryConfidence, let first = raw.map(\.confidence).min(),
       let second = clean.map(\.confidence).min() {
       row.inventoryConfidence = min(initial, min(first, second))
+    } else if let first = raw.map(\.confidence).min(), let second = clean.map(\.confidence).min(),
+      !text(raw).isEmpty, StockOCRRefinement.compact(text(raw)) == StockOCRRefinement.compact(text(clean)),
+      StockOCRRefinement.compact(text(raw)) == StockOCRRefinement.compact(row.cells[1]),
+      (original.inventoryReadings ?? []).contains(where: {
+        StockOCRRefinement.compact($0) == StockOCRRefinement.compact(row.cells[1])
+      }) {
+      // 批次漏读没有评分；只采用两次真实局部读数的评分，三次一致由共享规则核验。
+      row.inventoryConfidence = min(first, second)
     } else { row.inventoryConfidence = nil }
     return row
   }
@@ -2143,7 +2173,8 @@ enum StockHistoryProcessor {
     }
     let x = max(quantityLeft, floor(anchor.box.minX - anchor.box.height * 0.3))
     let y = floor(start)
-    let crop = CGRect(x: x, y: y, width: CGFloat(original.width) - x,
+    let right = min(CGFloat(original.width), anchor.box.maxX + anchor.box.height)
+    let crop = CGRect(x: x, y: y, width: right - x,
       height: min(CGFloat(original.height), ceil(end)) - y)
     for scale in [2, 4] {
       let raw = try inventoryRow(original, crop: crop, scale: scale,
@@ -2250,7 +2281,7 @@ enum StockHistoryProcessor {
       // 至少两种真实像素读数一致；有有效读数冲突时继续保留待确认。
       if readings.count >= 2, Set(readings.map { $0.0 }).count == 1 {
         return StockOCRCell(text: String(readings[0].0.dropLast(unitText.count)),
-          confidence: readings.map { $0.1 }.min()!, box: numberBox)
+          confidence: readings.map { $0.1 }.min()!, box: numberBox, verifiedReadings: readings.map { $0.0 })
       }
     }
     return nil

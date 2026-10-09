@@ -112,12 +112,81 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('PP-OCRv6 tiny'));
     await tester.pumpAndSettle();
+    expect(selected, 'vision');
+    await tester.ensureVisible(find.text('将所选模型设为后续导入默认'));
+    await tester.tap(find.text('将所选模型设为后续导入默认'));
+    await tester.pumpAndSettle();
     expect(selected, 'paddle_tiny');
     failSmall = true;
     await tester.tap(find.text('PP-OCRv6 small'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('将所选模型设为后续导入默认'));
+    await tester.pumpAndSettle();
     expect(selected, 'paddle_tiny');
     expect(find.textContaining('模型文件缺失'), findsOneWidget);
+  });
+  testWidgets('同图评估使用本次模型且不改变默认，待复核结果高亮', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final pending = StockLine(cells: ['待复核货物', '8.4袋'], confidence: .9);
+    Map<String, dynamic> run(String engine) => {
+      'engine': engine,
+      'evaluatedAt': '2026-10-09T10:00:00Z',
+      'document': doc([pending], engine: engine).toJson()
+        ..['recognitionRevision'] = 23,
+      'metrics': {
+        'elapsedMs': 100.0,
+        'modelLoadMs': 10.0,
+        'ocrCalls': 2,
+        'processedPixels': 1000,
+        'modelBytes': 100,
+        'residentBytes': 1000,
+        'policyRevision': 23,
+        'imageSHA256': 'a' * 64,
+      },
+    };
+    final called = <String>[];
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
+      switch (call.method) {
+        case 'getOCREngine':
+          return 'vision';
+        case 'loadProducts':
+          return '[]';
+        case 'loadOCRReference':
+          return null;
+        case 'loadModelRuns':
+          return '[]';
+        case 'evaluateModel':
+          final engine = (call.arguments as Map)['engine'] as String;
+          called.add(engine);
+          return jsonEncode(run(engine));
+        default:
+          throw StateError('非预期调用 ${call.method}');
+      }
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(StockHistoryStore.channel, null),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: StockOCRPage(document: doc([pending]))),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('PP-OCRv6 tiny'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('使用 PP-OCRv6 tiny 重新识别此单'));
+    await tester.pumpAndSettle();
+    expect(called, ['paddle_tiny']);
+    expect(find.textContaining('后续导入默认：Apple Vision'), findsOneWidget);
+    final card = find.text('PP-OCRv6 tiny · 待复核 1 / 1 行');
+    await tester.ensureVisible(card);
+    await tester.tap(card);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('待复核：货物未匹配或规格有疑点'), findsOneWidget);
+    expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
   });
   test('评估响应验证模型、策略版本、原图哈希和数值', () {
     final json = {

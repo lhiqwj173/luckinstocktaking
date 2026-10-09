@@ -136,8 +136,9 @@ class StockInventory {
   static StockReadingEvidence evidence(
     String expected,
     List<String> readings,
-    double? confidence,
-  ) {
+    double? confidence, {
+    String? fixedUnit,
+  }) {
     final signature = readingSignature(expected);
     var supporting = 0;
     var abstentions = 0;
@@ -146,7 +147,11 @@ class StockInventory {
       final actual = readingSignature(raw);
       if (signature != null && actual == signature) {
         supporting++;
-      } else if (noiseVariant(expected, raw)) {
+      } else if (fixedUnit != null &&
+          sameFixedUnitNumber(expected, raw, fixedUnit)) {
+        abstentions++; // 单位误读不是完整证据，只依赖另两次明确带标准单位的读数。
+      } else if (noiseVariant(expected, raw) ||
+          contaminatedVariant(expected, raw)) {
         abstentions++;
       } else if (actual == null &&
           !RegExp(r'[0-9〇零一二三四五六七八九十]').hasMatch(normalizeFormat(raw))) {
@@ -166,9 +171,8 @@ class StockInventory {
         conflicting == 0 &&
         signature != null &&
         ((allAgree && (confidence >= .8 || supporting >= 4)) ||
-            (supporting >= 3 &&
-                abstentions > 0 &&
-                readings.every((raw) => normalizeFormat(raw).isNotEmpty)));
+            (fixedUnit != null && supporting >= 2 && confidence >= .8) ||
+            (supporting >= 3 && abstentions > 0));
     return StockReadingEvidence(
       supporting,
       abstentions,
@@ -176,6 +180,12 @@ class StockInventory {
       allAgree,
       sufficient,
     );
+  }
+
+  static bool sameFixedUnitNumber(String expected, String raw, String unit) {
+    final match = RegExp(r'^(\d+(?:\.\d+)?)[A-Za-z]*$')
+        .firstMatch(normalizeFormat(raw));
+    return match != null && sameReading(expected, '${match.group(1)}$unit');
   }
 
   /// 保留所有数字、标点、数量单位、分区词和汉字数词，仅识别附着的无关汉字。
@@ -189,6 +199,34 @@ class StockInventory {
       (match) => meaningful.contains(match[0]!) ? match[0]! : '',
     );
     return cleaned != normalized && sameReading(expected, cleaned);
+  }
+
+  /// 完整库存仍在，但另有独立的无单位整数或无关汉字行混入。
+  /// 不清洗原始证据，不把此读数算作支持；带单位数量、分区和小数均不能丢弃。
+  static bool contaminatedVariant(String expected, String raw) {
+    final lines = raw
+        .split(RegExp(r'[\r\n]+'))
+        .map(normalizeFormat)
+        .where((line) => line.isNotEmpty)
+        .toList();
+    if (lines.length < 2 || readingSignature(expected) == null) return false;
+    for (var start = 0; start < lines.length; start++) {
+      for (var end = start + 1; end <= lines.length; end++) {
+        if (!sameReading(expected, lines.sublist(start, end).join('\n'))) {
+          continue;
+        }
+        final extra = [...lines.take(start), ...lines.skip(end)];
+        if (extra.isNotEmpty &&
+            extra.every(
+              (line) =>
+                  RegExp(r'^\d+$').hasMatch(line) ||
+                  noiseVariant('1个', '1个$line'),
+            )) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   bool get hasValue => !uncertain && parts.values.any((part) => part.hasValue);

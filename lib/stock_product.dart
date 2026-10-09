@@ -165,29 +165,89 @@ class ProductCandidate {
     this.score,
     this.exactCode,
     this.conflict,
+    this.edits,
   );
   final StockProduct product;
   final double score;
   final bool exactCode;
   final bool conflict;
+  final int edits;
 }
 
-/// 编辑距离只用于候选排序，不自动纠正数字、规格或库存。
-double _similarity(String left, String right) {
-  if (left.isEmpty || right.isEmpty) return 0;
-  var previous = List<int>.generate(right.length + 1, (index) => index);
-  for (var i = 1; i <= left.length; i++) {
-    final next = List<int>.filled(right.length + 1, i);
-    for (var j = 1; j <= right.length; j++) {
-      final insert = next[j - 1] + 1;
-      final delete = previous[j] + 1;
-      final replace = previous[j - 1] + (left[i - 1] == right[j - 1] ? 0 : 1);
-      next[j] = [insert, delete, replace].reduce((a, b) => a < b ? a : b);
-    }
-    previous = next;
+/// 通用字符对齐：任意字符的替换、漏字和多字均进入匹配率。
+/// 数字之间的替换、数字增删是规格冲突，不因整体文本很长而被稀释。
+({double score, bool numericConflict, int edits}) _textMatch(
+  String left,
+  String right,
+) {
+  if (left.isEmpty || right.isEmpty) {
+    return (score: 0, numericConflict: true, edits: left.length + right.length);
   }
-  return 1 -
-      previous.last / (left.length > right.length ? left.length : right.length);
+  final matrix = List.generate(
+    left.length + 1,
+    (i) => List<int>.generate(
+      right.length + 1,
+      (j) => i == 0 ? j : (j == 0 ? i : 0),
+    ),
+  );
+  for (var i = 1; i <= left.length; i++) {
+    for (var j = 1; j <= right.length; j++) {
+      matrix[i][j] = [
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j] + 1,
+        matrix[i - 1][j - 1] + (left[i - 1] == right[j - 1] ? 0 : 1),
+      ].reduce((a, b) => a < b ? a : b);
+    }
+  }
+  bool digit(String character) => RegExp(r'^[0-9]$').hasMatch(character);
+  bool decimalPoint(String text, int index) =>
+      text[index] == '.' &&
+      index > 0 &&
+      index + 1 < text.length &&
+      digit(text[index - 1]) &&
+      digit(text[index + 1]);
+  var i = left.length, j = right.length;
+  var conflict = false;
+  while (i > 0 || j > 0) {
+    if (i > 0 &&
+        j > 0 &&
+        matrix[i][j] ==
+            matrix[i - 1][j - 1] + (left[i - 1] == right[j - 1] ? 0 : 1)) {
+      if (left[i - 1] != right[j - 1] &&
+          ((digit(left[i - 1]) && digit(right[j - 1])) ||
+              decimalPoint(left, i - 1) ||
+              decimalPoint(right, j - 1))) {
+        conflict = true;
+      }
+      i--;
+      j--;
+    } else if (i > 0 && matrix[i][j] == matrix[i - 1][j] + 1) {
+      conflict = conflict || digit(left[i - 1]) || decimalPoint(left, i - 1);
+      i--;
+    } else {
+      conflict = conflict || digit(right[j - 1]) || decimalPoint(right, j - 1);
+      j--;
+    }
+  }
+  // 两边均读出完整数量单位时，单位变化也是实质冲突。
+  final units = RegExp(
+    r'\d+(?:\.\d+)?(毫升|个|包|袋|箱|盒|瓶|桶|卷|捆|克|斤|升|米|ml|kg|oz|g|l)',
+  );
+  final leftUnits = units.allMatches(left).map((m) => m[1]).toList();
+  final rightUnits = units.allMatches(right).map((m) => m[1]).toList();
+  if (leftUnits.length == rightUnits.length &&
+      leftUnits.isNotEmpty &&
+      leftUnits.join('|') != rightUnits.join('|')) {
+    conflict = true;
+  }
+  return (
+    score:
+        1 -
+        matrix.last.last /
+            (left.length > right.length ? left.length : right.length),
+    numericConflict: conflict,
+    edits: matrix.last.last,
+  );
 }
 
 List<ProductCandidate> matchProducts(
@@ -201,30 +261,31 @@ List<ProductCandidate> matchProducts(
       .map((match) => productKey(match.group(0)!).toUpperCase())
       .toSet();
   final query = productKey(raw.replaceAll(_codePattern, ''));
-  final numbers = RegExp(r'\d+(?:\.\d+)?')
-      .allMatches(query)
-      .map((m) => m.group(0)!)
-      .toList();
+  final hasKnownCode =
+      codes.length == 1 &&
+      products.any((p) => p.category == category && p.code == codes.single);
   final candidates = <ProductCandidate>[];
   for (final product in products.where(
     (product) => product.category == category,
   )) {
-    final readings = [product.name + product.specification, ...product.aliases];
-    final score = readings
-        .map((value) => _similarity(query, productKey(value)))
-        .reduce((a, b) => a > b ? a : b);
     final exactCode = codes.length == 1 && codes.single == product.code;
-    final expectedNumbers = RegExp(r'\d+(?:\.\d+)?')
-        .allMatches(productKey(product.name + product.specification))
-        .map((m) => m.group(0)!)
+    if (hasKnownCode && !exactCode) continue;
+    final readings = [product.name + product.specification, ...product.aliases];
+    final comparisons = readings
+        .map((value) => _textMatch(query, productKey(value)))
         .toList();
+    final canonicalConflict = comparisons.first.numericConflict;
+    comparisons.sort((a, b) => b.score.compareTo(a.score));
+    final best = comparisons.first;
+    final score = best.score;
     final conflict =
         (codes.isNotEmpty && !exactCode) ||
-        (numbers.isNotEmpty &&
-            expectedNumbers.isNotEmpty &&
-            numbers.join('|') != expectedNumbers.join('|'));
+        best.numericConflict ||
+        canonicalConflict;
     if (exactCode || score >= 0.35) {
-      candidates.add(ProductCandidate(product, score, exactCode, conflict));
+      candidates.add(
+        ProductCandidate(product, score, exactCode, conflict, best.edits),
+      );
     }
   }
   candidates.sort((a, b) {
@@ -254,16 +315,17 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
     if (matched == null) return line.invalidateIdentity();
   } else {
     if (line.isPrepared) {
-      final exact = products
-          .where(
-            (p) =>
-                p.category == 'prepared' &&
-                productKey(p.name) == productKey(line.cells[0]),
-          )
-          .toList();
-      if (exact.length == 1) matched = exact.single;
+      final candidates = matchProducts(line.cells[0], line.category, products);
+      if (candidates.isNotEmpty &&
+          !candidates.first.conflict &&
+          candidates.first.score >= .90 &&
+          (candidates.length == 1 ||
+              (candidates.first.score == 1 && candidates[1].score < 1) ||
+              candidates.first.score - candidates[1].score >= .10)) {
+        matched = candidates.first.product;
+      }
     } else {
-      // 自动匹配必须有唯一、准确的货号；模糊候选只在用户打开复核时计算。
+      // 唯一准确货号定位档案，通用编辑距离核验文本；真实规格数字差异仍阻断。
       final codes = _codePattern.allMatches(line.cells[0]).toList();
       if (codes.length != 1) return line;
       final code = productKey(codes.single.group(0)!).toUpperCase();
@@ -272,26 +334,57 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
           .toList();
       if (exact.isEmpty) return line;
       final first = matchProducts(line.cells[0], line.category, exact).single;
-      final raw = line.cells[0].replaceAll(_codePattern, '');
-      List<String> numbers(String value) =>
-          RegExp(r'\d+(?:\.\d+)?')
-              .allMatches(productKey(value))
-              .map((m) => m.group(0)!)
-              .toList();
       if (first.exactCode &&
           !first.conflict &&
-          first.score >= .70 &&
-          numbers(raw).join('|') ==
-              numbers(first.product.name + first.product.specification)
-                  .join('|')) {
+          (first.score >= .85 ||
+              (first.edits == 1 &&
+                  productKey(first.product.name + first.product.specification)
+                          .length >=
+                      4))) {
         matched = first.product;
       }
     }
   }
   if (matched == null) return line;
+  final fixedUnit = line.isPrepared && matched.units.length == 1
+      ? matched.units.single
+      : null;
+  var quantityText = line.cells[1];
+  if (fixedUnit != null && !line.inventoryConfirmed) {
+    final complete = line.inventoryReadings.where((value) {
+      final parsed = StockInventory.parse(value);
+      return !parsed.needsReview &&
+          parsed.parts.length == 1 &&
+          parsed.parts['库存']!.amounts.keys.toList().join() == fixedUnit &&
+          StockInventory.readingSignature(value) != null;
+    }).toList();
+    if (complete.length >= 2) {
+      final candidate = complete.first;
+      final proof = StockInventory.evidence(
+        candidate,
+        line.inventoryReadings,
+        line.inventoryConfidence,
+        fixedUnit: fixedUnit,
+      );
+      if (proof.sufficient &&
+          StockInventory.sameFixedUnitNumber(
+            candidate,
+            quantityText,
+            fixedUnit,
+          )) {
+        quantityText = StockInventory.parse(candidate).parts['库存']!.display;
+      }
+    }
+  }
+  final proof = StockInventory.evidence(
+    quantityText,
+    line.inventoryReadings,
+    line.inventoryConfidence,
+    fixedUnit: fixedUnit,
+  );
   final inventory = StockInventory.parse(
-    line.cells[1],
-    uncertain: line.inventoryUncertain && !line.inventoryEvidenceSufficient,
+    quantityText,
+    uncertain: line.inventoryUncertain && !proof.sufficient,
   );
   final unitsValid =
       inventory.parts.values
@@ -308,7 +401,7 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
       unitsValid &&
       !inventory.needsReview &&
       inventory.reviewStatus != '总库存与冷藏、冷冻合计不一致';
-  final agreed = line.inventoryEvidenceSufficient;
+  final agreed = proof.sufficient;
   // 重复同单位的数字片段不允许通过解析器相加后掩盖 OCR 重复。
   final noDuplicateAmounts = inventory.parts.values.every(
     (part) =>
@@ -386,7 +479,7 @@ StockLine reconcileStockLine(StockLine line, List<StockProduct> products) {
               sectionSumValid &&
               (hasCompleteTotal || explicitlyBlank || explicitTotalBlank)));
   return StockLine(
-    cells: [matched.display, line.cells[1]],
+    cells: [matched.display, quantityText],
     confidence: line.confidence,
     category: line.category,
     productId: matched.id,

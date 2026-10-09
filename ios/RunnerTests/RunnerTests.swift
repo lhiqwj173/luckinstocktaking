@@ -86,6 +86,21 @@ class RunnerTests: XCTestCase {
       [StockTextLine(cells: ["商品", "12盒"], confidence: 0.9)], primary: [], verification: []))
   }
 
+  func testFocusedReadingsRecoverEvidenceAfterBatchMissWithoutErasingRawReads() {
+    let original = StockTextLine(cells: ["测试商品", "-袋5个"], confidence: 0.9,
+      inventoryReadings: ["-袋5个", ""], inventoryConfidence: nil)
+    let cell = StockOCRCell(text: "-袋5个", confidence: 0.9,
+      box: CGRect(x: 500, y: 120, width: 50, height: 20))
+    let result = StockHistoryProcessor.appendFocusedInventoryReadings(original, raw: [cell], clean: [cell])
+    XCTAssertEqual(result.inventoryReadings, ["-袋5个", "", "-袋5个", "-袋5个"])
+    XCTAssertEqual(result.inventoryConfidence, 0.9)
+    let different = StockOCRCell(text: "-袋6个", confidence: 0.95, box: cell.box)
+    XCTAssertNil(StockHistoryProcessor.appendFocusedInventoryReadings(original, raw: [cell], clean: [different]).inventoryConfidence)
+    let noOriginal = StockTextLine(cells: ["测试商品", "-袋5个"], confidence: 0.9,
+      inventoryReadings: ["", ""], inventoryConfidence: nil)
+    XCTAssertNil(StockHistoryProcessor.appendFocusedInventoryReadings(noOriginal, raw: [cell], clean: [cell]).inventoryConfidence)
+  }
+
   func testProductSeedPreservesUserChangesAndDeletedEntries() throws {
     func product(_ code: String, _ name: String) -> [String: Any] {
       ["id": code, "code": code, "name": name, "specification": "1L*12盒/箱",

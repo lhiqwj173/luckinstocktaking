@@ -169,11 +169,11 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
                     dense: true,
                     title: Text(candidate.product.display),
                     subtitle: Text(
-                      candidate.conflict
+                      '文本相似度 ${(candidate.score * 100).toStringAsFixed(1)}%，差 ${candidate.edits} 个字符；${candidate.conflict
                           ? '货号或规格有冲突，须核对原图'
                           : candidate.exactCode
                           ? '货号一致，仍需核对规格'
-                          : '模糊匹配候选，须人工确认',
+                          : '模糊匹配候选，须人工确认'}',
                     ),
                     selected: _selected?.id == candidate.product.id,
                     leading: Icon(
@@ -208,6 +208,11 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
                 decoration: const InputDecoration(labelText: '实盘总库存（保留单位和分区）'),
               ),
               if (!widget.line.ready) Text(widget.line.pendingReason),
+              if (!widget.line.ready &&
+                  widget.line.inventoryEvidence.conflicting > 0)
+                Text(
+                  '当前库存：${widget.line.cells[1]}\n不同的读数：${widget.line.conflictingInventoryReadings.take(2).join('；')}\n三次一致也可能重复同一识别错误，因此保留此数字疑点。',
+                ),
               if (widget.line.inventoryReadings.isNotEmpty)
                 ExpansionTile(
                   tilePadding: EdgeInsets.zero,
@@ -225,6 +230,8 @@ class _StockReviewDialogState extends State<StockReviewDialog> {
                         title: Text(
                           '第 ${index + 1} 次：${StockInventory.sameReading(widget.line.inventoryReadings[index], widget.line.cells[1])
                               ? '格式统一后与当前库存一致'
+                              : StockInventory.contaminatedVariant(widget.line.cells[1], widget.line.inventoryReadings[index])
+                              ? '完整库存旁混入独立片段，未计入有效读数'
                               : StockInventory.noiseVariant(widget.line.cells[1], widget.line.inventoryReadings[index])
                               ? '包含无关文字，未计入有效读数'
                               : StockInventory.readingSignature(widget.line.inventoryReadings[index]) == null

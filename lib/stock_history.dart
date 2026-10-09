@@ -107,8 +107,32 @@ class StockLine {
   StockInventory get inventory =>
       StockInventory.parse(cells[1], uncertain: inventoryUncertain);
   String get text => cells.join(' · ');
-  StockReadingEvidence get inventoryEvidence =>
-      StockInventory.evidence(cells[1], inventoryReadings, inventoryConfidence);
+  StockReadingEvidence get inventoryEvidence {
+    final units = StockInventory.parse(cells[1]).parts['库存']?.amounts.keys
+        .toList();
+    final fixedUnit = isPrepared && identityConfirmed && units?.length == 1
+        ? units!.single
+        : null;
+    return StockInventory.evidence(
+      cells[1],
+      inventoryReadings,
+      inventoryConfidence,
+      fixedUnit: fixedUnit,
+    );
+  }
+
+  List<String> get conflictingInventoryReadings => inventoryReadings
+      .where(
+        (reading) =>
+            !StockInventory.sameReading(cells[1], reading) &&
+            !StockInventory.noiseVariant(cells[1], reading) &&
+            !StockInventory.contaminatedVariant(cells[1], reading) &&
+            (StockInventory.readingSignature(reading) != null ||
+                RegExp(r'[0-9〇零一二三四五六七八九十]')
+                    .hasMatch(StockInventory.normalizeFormat(reading))),
+      )
+      .toSet()
+      .toList();
   bool get inventoryReadingsAgree => inventoryEvidence.allAgree;
   bool get inventoryEvidenceSufficient => inventoryEvidence.sufficient;
   String get pendingReason {
@@ -122,12 +146,11 @@ class StockLine {
           inventory.totalMissing) {
         return inventory.reviewStatus;
       }
-      if (inventoryReadings.length < 2 ||
-          inventoryReadings.any((value) => value.trim().isEmpty)) {
-        return '库存缺少完整的复读证据';
-      }
       if (inventoryEvidence.conflicting > 0) {
         return '库存存在有效数量、单位或分区冲突';
+      }
+      if (inventoryEvidence.supporting < 2) {
+        return '库存缺少完整的复读证据';
       }
       if (!inventoryEvidenceSufficient) {
         return '库存识别证据不足，需核对原图';

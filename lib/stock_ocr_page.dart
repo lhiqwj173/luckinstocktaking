@@ -15,6 +15,8 @@ class StockOCRPage extends StatefulWidget {
 class _StockOCRPageState extends State<StockOCRPage> {
   final _store = StockOCRStore();
   StockOCREngine? _selected;
+  StockOCREngine? _choice;
+  bool _onlyPending = true;
   StockDocument? _reference;
   List<StockProduct> _products = [];
   final _runs = <StockOCREngine, StockOCRRun>{};
@@ -31,6 +33,7 @@ class _StockOCRPageState extends State<StockOCRPage> {
   Future<void> _initialize() => _perform(() async {
     _loaded = false;
     _selected = await _store.selected();
+    _choice = _selected;
     if (widget.document != null) {
       _products = await StockProductStore().load();
       _reference = await _store.reference(widget.document!.id);
@@ -192,6 +195,12 @@ class _StockOCRPageState extends State<StockOCRPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('结果只看待复核行'),
+          value: _onlyPending,
+          onChanged: (value) => setState(() => _onlyPending = value),
+        ),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: DataTable(
@@ -220,20 +229,39 @@ class _StockOCRPageState extends State<StockOCRPage> {
           Card(
             child: ExpansionTile(
               title: Text(
-                '${runs[i].engine.label} · 查看${scores[i] == null ? '识别结果' : '差异（${scores[i]!.differences.length}）'}',
+                '${runs[i].engine.label} · 待复核 ${lines[i].where((line) => !line.ready).length} / ${lines[i].length} 行',
               ),
               children: [
-                if (scores[i] == null)
-                  for (final line in lines[i])
-                    ListTile(
-                      title: Text(line.cells[0]),
-                      subtitle: Text(
-                        '${line.cells[1]}\n${line.ready ? '自动通过' : line.pendingReason}',
-                      ),
+                if (_onlyPending && lines[i].every((line) => line.ready))
+                  const ListTile(title: Text('全部自动通过，可关闭“只看待复核行”查看完整结果')),
+                for (final line in lines[i].where(
+                  (line) => !_onlyPending || !line.ready,
+                ))
+                  ListTile(
+                    tileColor: line.ready
+                        ? null
+                        : Theme.of(context).colorScheme.errorContainer,
+                    leading: Icon(
+                      line.ready
+                          ? Icons.check_circle_outline
+                          : Icons.warning_amber_rounded,
+                      color: line.ready
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.error,
                     ),
+                    title: Text(line.cells[0]),
+                    subtitle: Text(
+                      '${line.cells[1]}\n${line.ready ? '自动通过' : '待复核：${line.pendingReason}'}',
+                    ),
+                  ),
+                if (scores[i] != null)
+                  ListTile(
+                    title: Text('与人工参考单的差异：${scores[i]!.differences.length} 行'),
+                  ),
                 if (scores[i] != null)
                   for (final difference in scores[i]!.differences)
                     ListTile(
+                      tileColor: Theme.of(context).colorScheme.errorContainer,
                       title: Text(
                         (difference.reference ?? difference.actual)!.cells[0],
                       ),
@@ -257,15 +285,17 @@ class _StockOCRPageState extends State<StockOCRPage> {
         padding: const EdgeInsets.all(20),
         children: [
           const Text(
-            '默认识别模型',
+            '选择本次使用的模型',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
-          const Text('用于后续导入。三个模型复用同一套分行、档案匹配和库存校验规则。'),
+          Text(
+            '后续导入默认：${_selected?.label ?? '正在读取'}。选择模型后，点击下方“重新识别此单”查看当前单据的结果；保存为默认才会影响后续导入。',
+          ),
           for (final engine in StockOCREngine.values)
             ListTile(
               title: Text(engine.label),
               leading: Icon(
-                _selected == engine
+                _choice == engine
                     ? Icons.radio_button_checked
                     : Icons.radio_button_off,
               ),
@@ -276,14 +306,18 @@ class _StockOCRPageState extends State<StockOCRPage> {
                     ? '轻量模型，优先考虑速度和内存'
                     : '较大模型，准确性需按实际盘点单评估',
               ),
-              onTap: _busy
-                  ? null
-                  : () => _perform(() async {
-                      _progress = '切换到 ${engine.label}';
-                      await _store.select(engine);
-                      _selected = engine;
-                    }),
+              onTap: _busy ? null : () => setState(() => _choice = engine),
             ),
+          OutlinedButton(
+            onPressed: _busy || _choice == null
+                ? null
+                : () => _perform(() async {
+                    _progress = '保存默认模型 ${_choice!.label}';
+                    await _store.select(_choice!);
+                    _selected = _choice;
+                  }),
+            child: const Text('将所选模型设为后续导入默认'),
+          ),
           if (_busy) ...[const LinearProgressIndicator(), Text(_progress)],
           if (_error != null) ...[
             Text(
@@ -303,22 +337,16 @@ class _StockOCRPageState extends State<StockOCRPage> {
             ),
             const Text('读取这张单据保存的同一原图。评估结果独立保存，原盘点单和人工修改保持完整。'),
             FilledButton(
+              onPressed: _busy || !_loaded || _choice == null
+                  ? null
+                  : () => _evaluate([_choice!]),
+              child: Text('使用 ${_choice?.label ?? '所选模型'} 重新识别此单'),
+            ),
+            FilledButton(
               onPressed: _busy || !_loaded
                   ? null
                   : () => _evaluate(StockOCREngine.values),
-              child: const Text('评估全部三个模型'),
-            ),
-            Wrap(
-              spacing: 8,
-              children: [
-                for (final engine in StockOCREngine.values)
-                  OutlinedButton(
-                    onPressed: _busy || !_loaded
-                        ? null
-                        : () => _evaluate([engine]),
-                    child: Text('评估 ${engine.label}'),
-                  ),
-              ],
+              child: const Text('对比全部三个模型（不更改默认模型）'),
             ),
             OutlinedButton(
               onPressed:

@@ -91,7 +91,8 @@ void main() {
     );
     expect(matches.first.exactCode, true);
     expect(matches.first.conflict, true);
-    expect(matches[1].conflict, true);
+    expect(matches, hasLength(1));
+    expect(matches.single.product.code, 'GS10001-01');
     expect(products[0].id, isNot(products[1].id));
   });
   test('缺货号仍有名称候选，空读数不能补出商品', () {
