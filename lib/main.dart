@@ -650,7 +650,10 @@ class _CategoryDialogState extends State<CategoryDialog> {
               ),
               const SizedBox(height: 8),
               Text(
-                '计算：(称重 − ${type == WeighingType.other ? '自定义皮重' : '${type.tareGrams} 克'}) ÷ 单份重量；结果${allowMultiple ? '最小 0.1 份、无 0.9 份上限' : '限为 0.1～0.9 份'}，保留 1 位小数',
+                '计算：(称重 − ${type == WeighingType.other ? '自定义皮重' : '${type.tareGrams} 克'}) ÷ 单份重量；'
+                '最终份数向下保留 1 位小数'
+                '${allowMultiple ? '，最小 0.1 份、无 0.9 份上限' : '，限为 0.1～0.9 份'}；'
+                '括号内显示实际比例的 3 位小数',
               ),
             ],
           ),

@@ -621,13 +621,13 @@ class RunnerTests: XCTestCase {
     guard #available(iOS 16.0, *) else { throw XCTSkip("快捷指令要求 iOS 16") }
     let json = #"{"name":"奶油","aliases":[],"type":"portionBox","singleServingGrams":100,"allowMultiple":false}"#
     let category = try JSONDecoder().decode(IntentCategory.self, from: Data(json.utf8))
-    for weight in [350.0, 367.5, 367.51, 500.0] {
-      XCTAssertEqual(try category.calculate(weight: weight), "奶油：0.9 份")
+    for weight in [400.0, 417.5, 417.51, 500.0] {
+      XCTAssertTrue(try category.calculate(weight: weight).hasPrefix("奶油：0.9（"))
     }
-    XCTAssertThrowsError(try category.calculate(weight: 249.99))
+    XCTAssertThrowsError(try category.calculate(weight: 299.99))
     let multiple = try JSONDecoder().decode(IntentCategory.self,
       from: Data(json.replacingOccurrences(of: "false", with: "true").utf8))
-    XCTAssertEqual(try multiple.calculate(weight: 500), "奶油：2.5 份")
+    XCTAssertEqual(try multiple.calculate(weight: 550), "奶油：2.5（2.500）份")
   }
 
   private func pattern() -> CGImage {

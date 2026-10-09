@@ -21,11 +21,11 @@ void main() {
     final merged = mergeCatalog(existing, imported);
     expect(merged.length, 2);
     expect(merged.first.type, WeighingType.openedClip);
-    expect(merged.first.calculate(60), '0.5');
+    expect(merged.first.calculate(61), '0.5（0.500）');
     expect(merged.last.aliases, ['奶油', '芝麻']);
     expect(merged.last.tareGrams, 35);
-    expect(merged.last.calculate(95), '0.5');
-    expect(merged.last.calculate(275), '2.0');
+    expect(merged.last.calculate(95), '0.5（0.500）');
+    expect(merged.last.calculate(275), '2.0（2.000）');
     final roundTrip = importCatalogTsv(exportCatalogTsv(merged));
     expect(roundTrip.length, 2);
     expect(roundTrip.last.allowMultiple, isTrue);
@@ -37,7 +37,7 @@ void main() {
       '份盒称重\t旧品类\t\t100\t',
     );
     expect(imported.single.allowMultiple, isFalse);
-    expect(imported.single.calculate(350), '0.9');
+    expect(imported.single.calculate(350), '0.5（0.500）');
   });
 
   test('拒绝未知类别、无效重量和跨品类别名冲突', () {

@@ -1,6 +1,6 @@
 enum WeighingType {
-  portionBox('份盒称重', 250),
-  openedClip('开封夹称重', 20),
+  portionBox('份盒称重', 300),
+  openedClip('开封夹称重', 21),
   other('其他', null);
 
   const WeighingType(this.label, this.tareGrams);
@@ -80,14 +80,24 @@ class Category {
     if (netGrams < 0) {
       throw FormatException('${type.label}的称重不能低于皮重 $tareGrams 克，请检查输入重量');
     }
-    if (!allowMultiple && netGrams >= singleServingGrams) return '0.9';
-    final scaled = netGrams / singleServingGrams * 10 + 0.5;
-    if (!scaled.isFinite) throw const FormatException('称重与单份重量的比值超出有效范围');
-    final roundedTenths = scaled.floor();
-    final tenths = allowMultiple
-        ? (roundedTenths < 1 ? 1 : roundedTenths)
-        : roundedTenths.clamp(1, 9);
-    return '${tenths ~/ 10}.${tenths % 10}';
+    final ratio = netGrams / singleServingGrams;
+    if (!ratio.isFinite) {
+      throw const FormatException('称重与单份重量的比值超出有效范围');
+    }
+    final int tenths;
+    if (!allowMultiple && ratio >= 0.9) {
+      tenths = 9;
+    } else {
+      final scaled = ratio * 10;
+      if (!scaled.isFinite) {
+        throw const FormatException('称重与单份重量的比值超出有效范围');
+      }
+      final roundedTenths = scaled.floor();
+      tenths = allowMultiple
+          ? (roundedTenths < 1 ? 1 : roundedTenths)
+          : roundedTenths.clamp(1, 9).toInt();
+    }
+    return '${tenths ~/ 10}.${tenths % 10}（${ratio.toStringAsFixed(3)}）';
   }
 }
 

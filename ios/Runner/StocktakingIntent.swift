@@ -35,8 +35,8 @@ struct IntentCategory: Decodable {
     }
     var fixedTareGrams: Double? {
       switch self {
-      case .portionBox: return 250
-      case .openedClip: return 20
+      case .portionBox: return 300
+      case .openedClip: return 21
       case .other: return nil
       }
     }
@@ -100,14 +100,25 @@ struct IntentCategory: Decodable {
         "\(tare) 克以上"
       )
     }
-    if !allowMultiple && net >= singleServingGrams { return "\(name)：0.9 份" }
-    let scaled = net / singleServingGrams * 10 + 0.5
-    guard scaled.isFinite, scaled < Double(Int.max) else {
-      throw StocktakingError.invalidNumber
+    let ratio = net / singleServingGrams
+    guard ratio.isFinite else { throw StocktakingError.invalidNumber }
+    let scaled = ratio * 10
+    let tenths: Int
+    if !allowMultiple && ratio >= 0.9 {
+      tenths = 9
+    } else {
+      guard scaled.isFinite, scaled < Double(Int.max) else {
+        throw StocktakingError.invalidNumber
+      }
+      let roundedTenths = Int(scaled.rounded(.down))
+      tenths = allowMultiple ? max(1, roundedTenths) : min(9, max(1, roundedTenths))
     }
-    let roundedTenths = Int(scaled.rounded(.down))
-    let tenths = allowMultiple ? max(1, roundedTenths) : min(9, max(1, roundedTenths))
-    return "\(name)：\(tenths / 10).\(tenths % 10) 份"
+    let exactRatio = String(
+      format: "%.3f",
+      locale: Locale(identifier: "en_US_POSIX"),
+      ratio
+    )
+    return "\(name)：\(tenths / 10).\(tenths % 10)（\(exactRatio)）份"
   }
 }
 

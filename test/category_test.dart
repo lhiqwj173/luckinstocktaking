@@ -22,23 +22,23 @@ void main() {
     customTareGrams: 35,
   );
 
-  test('两种容器重均计算 0.1～0.9 份，结果保留一位小数', () {
-    expect(box.calculate(250), '0.1');
-    expect(box.calculate(254), '0.1');
-    expect(box.calculate(275), '0.3');
-    expect(box.calculate(345), '0.9');
-    expect(box.calculate(350), '0.9');
-    expect(clip.calculate(20), '0.1');
-    expect(clip.calculate(60), '0.5');
-    expect(clip.calculate(100), '0.9');
+  test('两种容器按新皮重计算并向下保留一位，附显示三位小数比例', () {
+    expect(box.calculate(300), '0.1（0.000）');
+    expect(box.calculate(304), '0.1（0.040）');
+    expect(box.calculate(325), '0.2（0.250）');
+    expect(box.calculate(395), '0.9（0.950）');
+    expect(box.calculate(400), '0.9（1.000）');
+    expect(clip.calculate(21), '0.1（0.000）');
+    expect(clip.calculate(61), '0.5（0.500）');
+    expect(clip.calculate(100), '0.9（0.988）');
   });
 
   test('其他类别使用自定义皮重，允许 0 克皮重', () {
-    expect(other.calculate(35), '0.1');
-    expect(other.calculate(85), '0.5');
-    expect(other.calculate(135), '0.9');
-    expect(other.calculate(135.01), '0.9');
-    expect(other.calculate(150), '0.9');
+    expect(other.calculate(35), '0.1（0.000）');
+    expect(other.calculate(85), '0.5（0.500）');
+    expect(other.calculate(135), '0.9（1.000）');
+    expect(other.calculate(135.01), '0.9（1.000）');
+    expect(other.calculate(150), '0.9（1.150）');
     expect(
       const Category(
         name: '零皮重',
@@ -47,7 +47,7 @@ void main() {
         singleServingGrams: 40,
         customTareGrams: 0,
       ).calculate(20),
-      '0.5',
+      '0.5（0.500）',
     );
   });
 
@@ -79,8 +79,8 @@ void main() {
   test('JSON 往返保留其他类别皮重，固定类别旧数据仍可读取', () {
     final restored = Category.fromJson(other.toJson());
     expect(restored.customTareGrams, 35);
-    expect(restored.calculate(85), '0.5');
-    expect(Category.fromJson(box.toJson()).calculate(300), '0.5');
+    expect(restored.calculate(85), '0.5（0.500）');
+    expect(Category.fromJson(box.toJson()).calculate(300), '0.1（0.000）');
     final legacy = box.toJson()..remove('allowMultiple');
     expect(Category.fromJson(legacy).allowMultiple, isFalse);
     expect(
@@ -97,23 +97,28 @@ void main() {
       singleServingGrams: 100,
       allowMultiple: true,
     );
-    expect(multiple.calculate(250), '0.1');
-    expect(multiple.calculate(350), '1.0');
-    expect(multiple.calculate(495), '2.5');
-    expect(() => multiple.calculate(249.99), throwsFormatException);
+    expect(multiple.calculate(300), '0.1（0.000）');
+    expect(multiple.calculate(400), '1.0（1.000）');
+    expect(multiple.calculate(545), '2.4（2.450）');
+    expect(() => multiple.calculate(299.99), throwsFormatException);
     expect(Category.fromJson(multiple.toJson()).allowMultiple, isTrue);
   });
 
   test('单份模式超重含超过5%均按0.9份，非法输入仍报错', () {
-    for (final weight in [249.99, double.nan, double.infinity]) {
+    for (final weight in [299.99, double.nan, double.infinity]) {
       expect(() => box.calculate(weight), throwsFormatException);
     }
-    for (final weight in <double>[350.01, 367.5, 367.51, 500, 1000000]) {
-      expect(box.calculate(weight), '0.9');
+    for (final entry in <double, String>{
+      390: '0.9（0.900）',
+      395: '0.9（0.950）',
+      400: '0.9（1.000）',
+      1000000: '0.9（9997.000）',
+    }.entries) {
+      expect(box.calculate(entry.key), entry.value);
     }
-    expect(clip.calculate(100.01), '0.9');
-    expect(clip.calculate(106), '0.9');
-    expect(() => clip.calculate(19.99), throwsFormatException);
+    expect(clip.calculate(100.01), '0.9（0.988）');
+    expect(clip.calculate(106), '0.9（1.063）');
+    expect(() => clip.calculate(20.99), throwsFormatException);
   });
 
   test('名称和别名模糊查找，精确结果优先', () {
