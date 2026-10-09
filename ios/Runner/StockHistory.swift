@@ -1402,6 +1402,7 @@ enum StockHistoryProcessor {
           guard shift >= 0 else {
             throw StockHistoryError.invalid("第 \(index + 1) 张截图向上回滚，请选择从上往下截取的截图")
           }
+          StockDiagnostics.log("截图接缝 index=\(index + 1) shift=\(shift) overlap=\(frame.height - shift) previousHeight=\(totalHeight)")
           if shift > 0 {
             guard let strip = frame.cropping(to: CGRect(x: 0,
               y: frame.height - shift, width: frame.width, height: shift)) else {
@@ -1986,7 +1987,6 @@ enum StockHistoryProcessor {
           if number.verifiedReadings.count >= 2 {
             preparedEvidence[Double(start)] = (number.verifiedReadings, min(number.confidence, unit.confidence))
           }
-          StockDiagnostics.log("截图接缝 index=\(index + 1) shift=\(shift) overlap=\(frame.height - shift) previousHeight=\(totalHeight)")
           return [number, unit]
         }
         progress("正在复核预制物料数量")
