@@ -783,6 +783,8 @@ enum StockHistoryStorage {
     do {
       try png.write(to: staging.appendingPathComponent(record.imageName), options: .atomic)
       try JSONEncoder().encode(record).write(to: staging.appendingPathComponent("record.json"), options: .atomic)
+      try JSONEncoder().encode(record).write(to: staging.appendingPathComponent("parse-result.json"), options: .atomic)
+      try StockDiagnostics.snapshot(to: staging.appendingPathComponent("parse.log"))
       try FileManager.default.moveItem(at: staging, to: directory(id))
     } catch {
       // 回滚失败同样向调用方抛出；不得留下一个看似成功的残缺记录。
@@ -847,7 +849,7 @@ enum StockExporter {
     guard !data.isEmpty else { throw StockHistoryError.invalid("导出内容为空") }
     // 文件名来自 Dart 侧的单据名称，必须确认它没有路径分隔符或父目录引用。
     guard name == URL(fileURLWithPath: name).lastPathComponent,
-          !name.hasPrefix("."), name.hasSuffix(".xlsx") else {
+          !name.hasPrefix("."), (name.hasSuffix(".xlsx") || name.hasSuffix(".zip")) else {
       throw StockHistoryError.invalid("导出文件名无效：\(name)")
     }
     let staging = FileManager.default.temporaryDirectory
@@ -919,6 +921,9 @@ enum StockDiagnostics {
   static let fileName = "diagnostics.log"
   private static let lock = NSLock()
   private static var handle: FileHandle?
+  private static var callIndex = 0
+  private static var captureInputs = false
+  private static func artifacts() throws -> URL { try StockHistoryStorage.root().appendingPathComponent(".debug-latest") }
   private static let formatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm:ss.SSS"
@@ -939,6 +944,11 @@ enum StockDiagnostics {
       let target = try url()
       _ = FileManager.default.createFile(atPath: target.path, contents: nil)
       handle = try FileHandle(forWritingTo: target)
+      callIndex = 0
+      captureInputs = UserDefaults.standard.bool(forKey: "stock.ocr.debugInputs")
+      let folder = try artifacts()
+      if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
+      try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
       append("==== \(label) \(ISO8601DateFormatter().string(from: Date())) ====")
     } catch {
       NSLog("[StockOCR] 诊断日志无法创建：%@", String(describing: error))
@@ -980,6 +990,181 @@ enum StockDiagnostics {
       throw StockHistoryError.invalid("暂无可导出的诊断日志，请先复现一次解析失败")
     }
     try StockExporter.share(url: target, cleanup: nil, onFinish: onFinish)
+  }
+
+  /// 按单据/引擎留存当前任务日志，后续任务不能覆盖已经保存的现场。
+  static func snapshot(to target: URL) throws {
+    lock.lock(); defer { lock.unlock() }
+    try handle?.synchronize()
+    let source = try url()
+    if !FileManager.default.fileExists(atPath: source.path) { return }
+    let data = try Data(contentsOf: source)
+    guard !data.isEmpty else { throw StockHistoryError.invalid("当前诊断日志为空") }
+    try data.write(to: target, options: .atomic)
+    let sourceArtifacts = try artifacts()
+    let destination = target.appendingPathExtension("artifacts")
+    if FileManager.default.fileExists(atPath: sourceArtifacts.path) {
+      if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
+      try FileManager.default.copyItem(at: sourceArtifacts, to: destination)
+    }
+  }
+
+  static func ocrCall(_ image: CGImage, engine: String, level: Int, minimumTextHeight: Float,
+    elapsedMs: Double, observations: [StockOCRObservation]) throws {
+    lock.lock(); defer { lock.unlock() }
+    // 合成测试可直接调用 OCR 而不启动盘点任务，此时不建立假任务。
+    guard handle != nil else { return }
+    callIndex += 1
+    let folder = try artifacts()
+    let name = String(format: "%06d", callIndex)
+    let values: [[String: Any]] = observations.map { item in
+      ["box": [Double(item.boundingBox.minX), Double(item.boundingBox.minY), Double(item.boundingBox.width), Double(item.boundingBox.height)],
+       "topLeft": [Double(item.topLeft.x), Double(item.topLeft.y)],
+       "topRight": [Double(item.topRight.x), Double(item.topRight.y)],
+       "candidates": item.topCandidates(5).map { ["text": $0.string, "confidence": Double($0.confidence)] as [String: Any] }]
+    }
+    let data = try JSONSerialization.data(withJSONObject: ["call": callIndex, "engine": engine,
+      "width": image.width, "height": image.height, "recognitionLevel": level,
+      "minimumTextHeight": Double(minimumTextHeight), "elapsedMs": elapsedMs,
+      "coordinateSystem": "normalized, bottom-left origin, local OCR input",
+      "imageCaptured": captureInputs, "observations": values] as [String: Any], options: [.sortedKeys])
+    try data.write(to: folder.appendingPathComponent("\(name).json"), options: .atomic)
+    if captureInputs {
+      guard let png = UIImage(cgImage: image).pngData() else { throw StockHistoryError.invalid("OCR 调试输入图编码失败") }
+      try png.write(to: folder.appendingPathComponent("\(name).png"), options: .atomic)
+    }
+    append("[StockOCR] OCR_CALL \(callIndex) engine=\(engine) size=\(image.width)x\(image.height) elapsedMs=\(elapsedMs)")
+  }
+
+  static func cells(_ stage: String, _ cells: [StockOCRCell]) throws {
+    let values: [[String: Any]] = cells.map { cell in
+      ["text": cell.text, "confidence": cell.confidence,
+       "x": Double(cell.box.minX), "y": Double(cell.box.minY),
+       "width": Double(cell.box.width), "height": Double(cell.box.height)]
+    }
+    let data = try JSONSerialization.data(withJSONObject: ["stage": stage, "cells": values], options: [.sortedKeys])
+    guard let text = String(data: data, encoding: .utf8) else { throw StockHistoryError.invalid("OCR 位置数据编码失败") }
+    log("OCR_CELLS \(text)")
+  }
+
+  static func captureEvaluation<T>(_ folder: URL, engine: String, operation: () throws -> T) throws -> T {
+    let errorFile = folder.appendingPathComponent("ocr-error-\(engine).json")
+    do {
+      let output = try operation()
+      if FileManager.default.fileExists(atPath: errorFile.path) { try FileManager.default.removeItem(at: errorFile) }
+      return output
+    } catch {
+      log("模型评估失败 engine=\(engine) error=\(String(reflecting: error))")
+      let data = try JSONSerialization.data(withJSONObject: ["engine": engine,
+        "status": "failed", "at": ISO8601DateFormatter().string(from: Date()),
+        "error": String(reflecting: error)], options: [.sortedKeys])
+      try data.write(to: errorFile, options: .atomic)
+      try snapshot(to: folder.appendingPathComponent("ocr-log-\(engine).log"))
+      throw error
+    }
+  }
+
+  static func screenshot(_ index: Int, input: StockScreenshotInput, image: CGImage, crop: StockCrop) throws {
+    lock.lock(); defer { lock.unlock() }
+    guard handle != nil else { return }
+    let name = String(format: "source-%03d", index + 1)
+    let folder = try artifacts()
+    let data = try JSONSerialization.data(withJSONObject: ["index": index + 1,
+      "capturedAt": ISO8601DateFormatter().string(from: input.capturedAt), "width": image.width,
+      "height": image.height, "originalExtension": input.url.pathExtension,
+      "cropTopRatio": crop.top, "cropBottomRatio": crop.bottom,
+      "originalCaptured": captureInputs] as [String: Any], options: [.sortedKeys])
+    try data.write(to: folder.appendingPathComponent("\(name).json"), options: .atomic)
+    if captureInputs {
+      try FileManager.default.copyItem(at: input.url, to: folder.appendingPathComponent("\(name).original"))
+    }
+  }
+
+  static func transform(_ stage: String, crop: CGRect, scale: Int, source: CGImage, isolated: Bool, pattern: String?) throws {
+    lock.lock(); defer { lock.unlock() }
+    guard handle != nil else { return }
+    let data = try JSONSerialization.data(withJSONObject: ["call": callIndex, "stage": stage,
+      "crop": [Double(crop.minX), Double(crop.minY), Double(crop.width), Double(crop.height)],
+      "scale": scale, "sourceWidth": source.width, "sourceHeight": source.height,
+      "isolatedNumber": isolated, "requiredPattern": pattern.map { $0 as Any } ?? NSNull(),
+      "coordinateSystem": "pixels, top-left origin, source before crop"] as [String: Any], options: [.sortedKeys])
+    try data.write(to: artifacts().appendingPathComponent(String(format: "%06d-transform.json", callIndex)), options: .atomic)
+  }
+
+  static func context(_ id: String?) throws -> [String: Any] {
+    var files: [String: FlutterStandardTypedData] = [:]
+    var missing: [String] = []
+    func includeArtifacts(_ folder: URL, prefix: String) throws {
+      if !FileManager.default.fileExists(atPath: folder.path) { missing.append(prefix); return }
+      for file in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) {
+        guard file.lastPathComponent.range(of: "^(?:[0-9]{6}(?:-transform)?\\.(?:json|png)|source-[0-9]{3}\\.(?:json|original))$", options: .regularExpression) != nil else {
+          throw StockHistoryError.invalid("OCR 调试附件名称无效")
+        }
+        files["\(prefix)/\(file.lastPathComponent)"] = FlutterStandardTypedData(bytes: try Data(contentsOf: file))
+      }
+    }
+    var metadata: [String: Any] = ["schemaVersion": 1, "documentId": id.map { $0 as Any } ?? NSNull(),
+      "exportedAt": ISO8601DateFormatter().string(from: Date()),
+      "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as Any? ?? NSNull(),
+      "appBuild": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as Any? ?? NSNull(),
+      "systemVersion": UIDevice.current.systemVersion,
+      "recognitionRevision": StockHistoryProcessor.recognitionRevision,
+      "defaultEngine": try StockOCREngine.selected().rawValue]
+    metadata["detailedCaptureSettingAtExport"] = UserDefaults.standard.bool(forKey: "stock.ocr.debugInputs")
+    metadata["deviceModel"] = UIDevice.current.model
+    metadata["bundleIdentifier"] = Bundle.main.bundleIdentifier
+    if let id = id {
+      let folder = try StockHistoryStorage.directory(id)
+      let recordData = try Data(contentsOf: folder.appendingPathComponent("record.json"))
+      let record = try JSONDecoder().decode(StockHistoryDocument.self, from: recordData)
+      try record.validate()
+      guard record.id == id else { throw StockHistoryError.invalid("诊断单据标识不一致") }
+      let image = try StockHistoryStorage.image(id)
+      guard let decoded = UIImage(data: image)?.cgImage else { throw StockHistoryError.invalid("诊断原图无法读取") }
+      files["source.png"] = FlutterStandardTypedData(bytes: image)
+      metadata["imageSHA256"] = SHA256.hash(data: image).map { String(format: "%02x", $0) }.joined()
+      metadata["imageWidth"] = decoded.width; metadata["imageHeight"] = decoded.height
+      metadata["sourceDescription"] = "source.png 是保存的 OCR 输入 PNG，导出不重编码；开启详细采集后导入的原始截图保存在 ocr/parse/source-*.original，扩展名见对应 JSON；原视频不保存"
+      let names = ["record.json", "parse-result.json", "parse.log", "before-refinement.json",
+        "legacy-recognized-lines.json", "ocr-reference.json"] + StockOCREngine.allCases.flatMap {
+          ["ocr-run-\($0.rawValue).json", "ocr-log-\($0.rawValue).log", "ocr-error-\($0.rawValue).json"]
+        }
+      for name in names {
+        let file = folder.appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: file.path) {
+          files[name] = FlutterStandardTypedData(bytes: try Data(contentsOf: file))
+        } else { missing.append(name) }
+      }
+      try includeArtifacts(folder.appendingPathComponent("parse.log.artifacts"), prefix: "ocr/parse")
+      for engine in StockOCREngine.allCases {
+        try includeArtifacts(folder.appendingPathComponent("ocr-log-\(engine.rawValue).log.artifacts"), prefix: "ocr/\(engine.rawValue)")
+      }
+      metadata["logScope"] = "仅此单据及其已保存模型评估；不会混入最近一次其他单据的日志"
+    } else {
+      lock.lock(); defer { lock.unlock() }
+      try handle?.synchronize()
+      let data = try Data(contentsOf: url())
+      guard !data.isEmpty else { throw StockHistoryError.invalid("暂无识别调试日志，请先复现问题") }
+      files[fileName] = FlutterStandardTypedData(bytes: data)
+      try includeArtifacts(artifacts(), prefix: "ocr/latest")
+      metadata["logScope"] = "最近一次识别任务，可用于解析失败；未关联单据和原图"
+    }
+    if let resources = Bundle.main.resourceURL {
+      for engine in [StockOCREngine.paddleTiny, .paddleSmall] {
+        for role in ["det", "rec"] {
+          let name = "models/\(engine.rawValue)/\(role)/config.json"
+          let file = resources.appendingPathComponent("OCRModels/\(engine.folder)/\(role)/config.json")
+          if FileManager.default.fileExists(atPath: file.path) {
+            files[name] = FlutterStandardTypedData(bytes: try Data(contentsOf: file))
+          } else { missing.append(name) }
+        }
+      }
+    } else { throw StockHistoryError.invalid("模型配置资源目录缺失") }
+    metadata["missingFiles"] = missing
+    metadata["files"] = files.keys.sorted()
+    let data = try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys])
+    guard let json = String(data: data, encoding: .utf8) else { throw StockHistoryError.invalid("诊断清单编码失败") }
+    return ["metadata": json, "files": files]
   }
 }
 
@@ -1198,10 +1383,12 @@ enum StockHistoryProcessor {
           raw.width * raw.height <= 40_000_000 else {
           throw StockHistoryError.invalid("第 \(index + 1) 张截图无法读取、方向不正确或尺寸过大")
         }
+        try StockDiagnostics.screenshot(index, input: input, image: raw, crop: activeCrop)
         let frame = try activeCrop.apply(raw)
         let bodyTop: Int
         if crop == nil { bodyTop = try screenshotBodyTop(frame) }
         else { bodyTop = 0 }
+        StockDiagnostics.log("截图输入 index=\(index + 1) raw=\(raw.width)x\(raw.height) crop=\(frame.width)x\(frame.height) bodyTop=\(bodyTop)")
         let gray = try StockGrayFrame(frame, contentTop: bodyTop)
         if let old = previous {
           guard width == frame.width, old.height == frame.height else {
@@ -1655,6 +1842,7 @@ enum StockHistoryProcessor {
       headers = try recoverGoodsHeaders(cg, clean: recognitionImage, candidates: cells)
       if let recovered = headers { cells.append(contentsOf: [recovered.name, recovered.stock]) }
     }
+    try StockDiagnostics.cells("full-image-primary", cells)
     guard let headers = headers else {
       StockDiagnostics.log("货物表头识别失败 前部候选=\(cells.filter { $0.box.minY < CGFloat(cg.width * 2) }.map { "\($0.text)@\($0.box) confidence=\($0.confidence)" })")
       throw StockHistoryError.invalid("放大复核后仍未识别到同一行的货物规格名称和实盘总库存，请核对原图清晰度")
@@ -1702,11 +1890,14 @@ enum StockHistoryProcessor {
       }
     }
     let primaryInventoryCells = cells.filter { $0.box.minX >= CGFloat(columnX) }
+    try StockDiagnostics.cells("inventory-primary", primaryInventoryCells)
+    try StockDiagnostics.cells("inventory-verification", verificationCells)
     cells = try refine(cells, original: cg, clean: recognitionImage, columnX: columnX, progress: progress)
     // 通用复核可能首次发现货号；货号完整性复核必须是进入行划分前的最后一步。
     cells = try recoverProductCodes(cells, original: cg, clean: recognitionImage,
       columnX: columnX, progress: progress)
     StockDiagnostics.log("复核完成 cells=\(cells.count)")
+    try StockDiagnostics.cells("refined-before-row-grouping", cells)
     let goodsBottom = StockTableParser.goodsBottom(cells, below: max(headers.name.box.maxY, header.box.maxY),
       imageBottom: CGFloat(cg.height))
     let rowBands = try visualGoodsRows(cg, top: max(headers.name.box.maxY, header.box.maxY), bottom: goodsBottom)
@@ -1795,6 +1986,7 @@ enum StockHistoryProcessor {
           if number.verifiedReadings.count >= 2 {
             preparedEvidence[Double(start)] = (number.verifiedReadings, min(number.confidence, unit.confidence))
           }
+          StockDiagnostics.log("截图接缝 index=\(index + 1) shift=\(shift) overlap=\(frame.height - shift) previousHeight=\(totalHeight)")
           return [number, unit]
         }
         progress("正在复核预制物料数量")
@@ -2308,6 +2500,8 @@ enum StockHistoryProcessor {
     guard let enlarged = context.makeImage() else { throw StockHistoryError.invalid("无法生成库存行识别图") }
     let results = try StockOCR.recognize(enlarged, level: recognitionLevel,
       minimumTextHeight: Float(min(requiredPattern == nil ? 0.02 : 0.01, 6 / Double(tile.height))))
+    try StockDiagnostics.transform(diagnosticContext ?? "inventory-row", crop: crop, scale: scale,
+      source: source, isolated: isolatedNumber, pattern: requiredPattern)
     if let label = diagnosticContext {
       let readings = results.map { observation in
         let candidates = observation.topCandidates(5).map { "\($0.string):\($0.confidence)" }.joined(separator: "|")
@@ -2482,6 +2676,11 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
       do {
         let value: Any?
         switch call.method {
+        case "getOCRDebugInputs": value = UserDefaults.standard.bool(forKey: "stock.ocr.debugInputs")
+        case "setOCRDebugInputs":
+          guard let enabled = call.arguments as? Bool else { throw StockHistoryError.invalid("调试采集参数无效") }
+          UserDefaults.standard.set(enabled, forKey: "stock.ocr.debugInputs")
+          value = nil
         case "getOCREngine": value = try StockOCREngine.selected().rawValue
         case "setOCREngine":
           guard let raw = call.arguments as? String, let engine = StockOCREngine(rawValue: raw) else {
@@ -2504,7 +2703,9 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
           let bytes = try StockHistoryStorage.image(id)
           guard let image = UIImage(data: bytes) else { throw StockHistoryError.invalid("模型评估原图无法解码") }
           StockDiagnostics.begin("模型评估 \(raw) \(id)")
-          let (lines, context, elapsed) = try StockOCR.withEngine(engine) { try StockHistoryProcessor.recognize(image) }
+          let (lines, context, elapsed) = try StockDiagnostics.captureEvaluation(folder, engine: raw) {
+            try StockOCR.withEngine(engine) { try StockHistoryProcessor.recognize(image) }
+          }
           let document = StockHistoryDocument(schemaVersion: 2, id: source.id, title: source.title,
             createdAt: source.createdAt, imageName: source.imageName, lines: lines, reviewed: false,
             recognitionRevision: StockHistoryProcessor.recognitionRevision, ocrEngine: raw)
@@ -2517,10 +2718,14 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
           let run = StockOCREvaluationRun(engine: engine, document: document, metrics: metrics,
             evaluatedAt: ISO8601DateFormatter().string(from: Date()))
           try JSONEncoder().encode(run).write(to: folder.appendingPathComponent("ocr-run-\(raw).json"), options: .atomic)
+          try StockDiagnostics.snapshot(to: folder.appendingPathComponent("ocr-log-\(raw).log"))
           guard let json = String(data: try JSONEncoder().encode(run), encoding: .utf8) else {
             throw StockHistoryError.invalid("模型评估无法编码为 UTF-8")
           }
           value = json
+        case "debugContext":
+          guard call.arguments == nil || call.arguments is NSNull || call.arguments is String else { throw StockHistoryError.invalid("诊断单据参数无效") }
+          value = try StockDiagnostics.context(call.arguments as? String)
         case "loadModelRuns":
           guard let id = call.arguments as? String else { throw StockHistoryError.invalid("模型评估单据标识缺失") }
           let folder = try StockHistoryStorage.directory(id)
@@ -2586,6 +2791,11 @@ final class StockHistoryBridge: NSObject, PHPickerViewControllerDelegate, UIAdap
               try JSONEncoder().encode(original).write(to: backup, options: .atomic)
             }
             try StockHistoryStorage.save(table.json())
+            if original.needsRecognition {
+              let folder = url.deletingLastPathComponent()
+              try JSONEncoder().encode(table).write(to: folder.appendingPathComponent("parse-result.json"), options: .atomic)
+              try StockDiagnostics.snapshot(to: folder.appendingPathComponent("parse.log"))
+            }
             value = try table.json()
           }
         case "loadProducts":

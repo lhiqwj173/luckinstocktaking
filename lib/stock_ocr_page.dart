@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'stock_history.dart';
 import 'stock_ocr.dart';
 import 'stock_product.dart';
+import 'stock_debug.dart';
 
 class StockOCRPage extends StatefulWidget {
   const StockOCRPage({super.key, this.document});
@@ -22,6 +23,7 @@ class _StockOCRPageState extends State<StockOCRPage> {
   final _runs = <StockOCREngine, StockOCRRun>{};
   bool _busy = true;
   bool _loaded = false;
+  bool _captureInputs = false;
   String? _error;
   String _progress = '读取模型设置';
   @override
@@ -34,6 +36,11 @@ class _StockOCRPageState extends State<StockOCRPage> {
     _loaded = false;
     _selected = await _store.selected();
     _choice = _selected;
+    final capture = await StockHistoryStore.channel.invokeMethod<bool>(
+      'getOCRDebugInputs',
+    );
+    if (capture == null) throw const FormatException('未返回调试采集设置');
+    _captureInputs = capture;
     if (widget.document != null) {
       _products = await StockProductStore().load();
       _reference = await _store.reference(widget.document!.id);
@@ -288,6 +295,22 @@ class _StockOCRPageState extends State<StockOCRPage> {
             '选择本次使用的模型',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('详细调试采集（下次识别生效）'),
+            subtitle: const Text('记录实际送入模型的每张局部 PNG。开启后增加耗时和空间；候选、坐标及参数默认记录。'),
+            value: _captureInputs,
+            onChanged: _busy || !_loaded
+                ? null
+                : (value) => _perform(() async {
+                    _progress = '保存调试采集设置';
+                    await StockHistoryStore.channel.invokeMethod<void>(
+                      'setOCRDebugInputs',
+                      value,
+                    );
+                    _captureInputs = value;
+                  }),
+          ),
           Text(
             '后续导入默认：${_selected?.label ?? '正在读取'}。选择模型后，点击下方“重新识别此单”查看当前单据的结果；保存为默认才会影响后续导入。',
           ),
@@ -336,6 +359,21 @@ class _StockOCRPageState extends State<StockOCRPage> {
               style: const TextStyle(fontSize: 20),
             ),
             const Text('读取这张单据保存的同一原图。评估结果独立保存，原盘点单和人工修改保持完整。'),
+            OutlinedButton.icon(
+              onPressed: _busy || !_loaded
+                  ? null
+                  : () => _perform(() async {
+                      _progress = '生成模型对比调试包';
+                      final products = await StockProductStore().load();
+                      await shareStockDebug(
+                        StockHistoryStore(),
+                        document: widget.document,
+                        products: products,
+                      );
+                    }),
+              icon: const Icon(Icons.bug_report_outlined),
+              label: const Text('导出解析与模型对比调试包'),
+            ),
             FilledButton(
               onPressed: _busy || !_loaded || _choice == null
                   ? null

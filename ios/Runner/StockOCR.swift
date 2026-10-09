@@ -154,6 +154,7 @@ enum StockOCR {
     defer { runtimeLock.unlock() }
     let engine = try context?.engine ?? StockOCREngine.selected()
     context?.calls += 1; context?.pixels += Int64(image.width) * Int64(image.height)
+    let callStart = ProcessInfo.processInfo.systemUptime
     if engine == .vision {
       paddle = nil
       let request = VNRecognizeTextRequest()
@@ -163,8 +164,11 @@ enum StockOCR {
       request.minimumTextHeight = minimumTextHeight
       try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
       guard let results = request.results else { throw StockHistoryError.invalid("Vision 未返回识别结果") }
-      return results.map { item in StockOCRObservation(boundingBox: item.boundingBox,
+      let output = results.map { item in StockOCRObservation(boundingBox: item.boundingBox,
         topLeft: item.topLeft, topRight: item.topRight, candidates: item.topCandidates(5).map { StockOCRText(vision: $0) }) }
+      try StockDiagnostics.ocrCall(image, engine: engine.rawValue, level: level.rawValue,
+        minimumTextHeight: minimumTextHeight, elapsedMs: (ProcessInfo.processInfo.systemUptime - callStart) * 1000, observations: output)
+      return output
     }
     if paddle?.engine != engine {
       paddle = nil // 切换模型释放旧会话，不同时驻留两套权重。
@@ -173,7 +177,10 @@ enum StockOCR {
       context?.loadSeconds += ProcessInfo.processInfo.systemUptime - start
     }
     guard let runtime = paddle else { throw StockHistoryError.invalid("Paddle 模型会话未初始化") }
-    return try runtime.recognize(image, minimumTextHeight: minimumTextHeight)
+    let output = try runtime.recognize(image, minimumTextHeight: minimumTextHeight)
+    try StockDiagnostics.ocrCall(image, engine: engine.rawValue, level: level.rawValue,
+      minimumTextHeight: minimumTextHeight, elapsedMs: (ProcessInfo.processInfo.systemUptime - callStart) * 1000, observations: output)
+    return output
   }
 }
 

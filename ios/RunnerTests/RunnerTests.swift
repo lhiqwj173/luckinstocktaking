@@ -5,6 +5,37 @@ import XCTest
 @testable import Runner
 
 class RunnerTests: XCTestCase {
+  func testDiagnosticSnapshotKeepsTaskLogAndStructuredCoordinates() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+    defer { try! FileManager.default.removeItem(at: folder) }
+    let previous = UserDefaults.standard.bool(forKey: "stock.ocr.debugInputs")
+    UserDefaults.standard.set(true, forKey: "stock.ocr.debugInputs")
+    defer { UserDefaults.standard.set(previous, forKey: "stock.ocr.debugInputs") }
+    StockDiagnostics.begin("单据 A")
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { context in
+      UIColor.white.setFill(); context.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+    }
+    try StockDiagnostics.ocrCall(XCTUnwrap(image.cgImage), engine: "vision", level: 0,
+      minimumTextHeight: 0, elapsedMs: 12, observations: [])
+    try StockDiagnostics.cells("inventory-primary", [StockOCRCell(text: "8.4袋", confidence: 0.9,
+      box: CGRect(x: 500, y: 120, width: 50, height: 20))])
+    let target = folder.appendingPathComponent("parse.log")
+    try StockDiagnostics.snapshot(to: target)
+    let callFile = target.appendingPathExtension("artifacts").appendingPathComponent("000001.json")
+    let call = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: callFile)) as? [String: Any])
+    XCTAssertEqual(call["imageCaptured"] as? Bool, true)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathExtension("artifacts").appendingPathComponent("000001.png").path))
+    let first = try String(contentsOf: target, encoding: .utf8)
+    XCTAssertTrue(first.contains("单据 A"))
+    XCTAssertTrue(first.contains("OCR_CELLS"))
+    XCTAssertTrue(first.contains("inventory-primary"))
+    XCTAssertTrue(first.contains("8.4袋"))
+    StockDiagnostics.begin("单据 B")
+    StockDiagnostics.log("新模型的另一份日志")
+    XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), first)
+    XCTAssertFalse(first.contains("单据 B"))
+  }
   func testPaddleCTCKeepsDecimalAndSeparatesRepeatedCharacters() throws {
     let dictionary = ["", "1", ".", "5", "袋"]
     let ids = [0, 1, 1, 2, 0, 3, 4, 4, 0]

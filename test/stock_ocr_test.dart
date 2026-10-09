@@ -93,9 +93,15 @@ void main() {
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     var selected = 'vision';
+    var captureInputs = false;
     var failSmall = false;
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, (call) async {
       if (call.method == 'getOCREngine') return selected;
+      if (call.method == 'getOCRDebugInputs') return captureInputs;
+      if (call.method == 'setOCRDebugInputs') {
+        captureInputs = call.arguments as bool;
+        return null;
+      }
       if (call.method == 'setOCREngine') {
         if (failSmall && call.arguments == 'paddle_small') {
           throw PlatformException(code: 'missing_model', message: '模型文件缺失');
@@ -117,6 +123,10 @@ void main() {
     await tester.tap(find.text('将所选模型设为后续导入默认'));
     await tester.pumpAndSettle();
     expect(selected, 'paddle_tiny');
+    await tester.ensureVisible(find.text('详细调试采集（下次识别生效）'));
+    await tester.tap(find.text('详细调试采集（下次识别生效）'));
+    await tester.pumpAndSettle();
+    expect(captureInputs, true);
     failSmall = true;
     await tester.tap(find.text('PP-OCRv6 small'));
     await tester.pumpAndSettle();
@@ -154,6 +164,8 @@ void main() {
       switch (call.method) {
         case 'getOCREngine':
           return 'vision';
+        case 'getOCRDebugInputs':
+          return false;
         case 'loadProducts':
           return '[]';
         case 'loadOCRReference':

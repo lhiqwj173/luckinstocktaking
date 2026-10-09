@@ -37,6 +37,7 @@ dependencies:
 
   # 纯 Dart，用于把盘点单导出为 .xlsx；不引入任何原生插件。
   excel: ^4.0.6
+  archive: ^3.6.1
 
 dev_dependencies:
   flutter_test:

@@ -10,6 +10,7 @@ import 'stock_product.dart';
 import 'stock_review_dialog.dart';
 import 'stock_ocr_page.dart';
 import 'stock_ocr.dart';
+import 'stock_debug.dart';
 
 const historyInstructions =
     '1. 在瑞幸盘打开旧盘点单，使用系统录屏，从顶部缓慢滚动到底。\n'
@@ -108,6 +109,8 @@ class _StockHistoryPageState extends State<StockHistoryPage>
       if (mounted) setState(() => _error = error.message ?? error.code);
     }
   }
+
+  Future<void> _shareLatestDebug() => _operation(() => shareStockDebug(_store));
 
   Future<void> _open(StockDocument document) async {
     await Navigator.of(context).push<StockDocument>(
@@ -468,6 +471,11 @@ class _StockHistoryPageState extends State<StockHistoryPage>
                           icon: const Icon(Icons.bug_report_outlined, size: 18),
                           label: const Text('导出诊断日志'),
                         ),
+                        OutlinedButton.icon(
+                          onPressed: _busy ? null : _shareLatestDebug,
+                          icon: const Icon(Icons.archive_outlined, size: 18),
+                          label: const Text('导出本次失败调试包'),
+                        ),
                       ],
                     ),
                   ),
@@ -535,7 +543,7 @@ class _StockHistoryPageState extends State<StockHistoryPage>
 String _date(DateTime date) => date.toLocal().toString().substring(0, 16);
 
 /// 详情页「更多」菜单里的导出与分享动作。
-enum _ShareAction { excel, image }
+enum _ShareAction { excel, image, debug }
 
 class StockDocumentPage extends StatefulWidget {
   const StockDocumentPage({super.key, required this.document});
@@ -646,6 +654,7 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   void _share(_ShareAction action) => switch (action) {
     _ShareAction.excel => _exportExcel(),
     _ShareAction.image => _shareImage(),
+    _ShareAction.debug => _exportDebug(),
   };
 
   /// 导出当前页面所见，包括尚未点「保存修改」的校对改动。
@@ -661,6 +670,16 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
   Future<void> _shareImage() => _run(() async {
     await _store.shareImage(_document);
     if (mounted) _notify('已打开分享面板，可发送长图到微信');
+  });
+
+  Future<void> _exportDebug() => _run(() async {
+    final products = _productsLoaded ? _products : await _productStore.load();
+    await shareStockDebug(
+      _store,
+      document: _document.edited(_title.text, _lines),
+      products: products,
+    );
+    if (mounted) _notify('调试包已生成，包含原图、解析数据、匹配依据及日志');
   });
 
   /// 把最近一次识别任务的诊断日志交给系统分享面板，用于定位解析失败。
@@ -819,6 +838,12 @@ class _StockDocumentPageState extends State<StockDocumentPage> {
                   Icons.ios_share_outlined,
                   '分享长图',
                   enabled: _images != null && !_saving,
+                ),
+                _shareItem(
+                  _ShareAction.debug,
+                  Icons.bug_report_outlined,
+                  '导出解析调试包',
+                  enabled: !_preparing && !_saving && !_sharing,
                 ),
               ],
             ),
