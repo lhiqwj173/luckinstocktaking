@@ -1351,7 +1351,16 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 24
+  static let recognitionRevision = 25
+  static let supportedOCRScales = 1...4
+  static let goodsInventoryVotingScales = [2, 3, 4]
+  static let preparedInventoryVotingScales = [1, 3, 4]
+
+  static func validateOCRScale(_ scale: Int) throws {
+    guard supportedOCRScales.contains(scale) else {
+      throw StockHistoryError.invalid("OCR 放大倍数无效：\(scale)，支持 1～4 倍")
+    }
+  }
   static func processScreenshots(_ inputs: [StockScreenshotInput],
     progress: @escaping (String) -> Void = { _ in }) throws -> StockHistoryDocument {
     StockDiagnostics.begin("截图组导入")
@@ -1711,7 +1720,7 @@ enum StockHistoryProcessor {
   }
 
   static func enlargedOCRTile(_ image: CGImage, scale: Int) throws -> CGImage {
-    guard (1...4).contains(scale) else { throw StockHistoryError.invalid("识别放大倍数无效") }
+    try validateOCRScale(scale)
     if scale == 1 { return image }
     guard let context = CGContext(data: nil, width: image.width * scale, height: image.height * scale,
       bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else {
@@ -1751,6 +1760,10 @@ enum StockHistoryProcessor {
   }
 
   static func recognize(_ image: UIImage, progress: @escaping (String) -> Void = { _ in }) throws -> [StockTextLine] {
+    // 进入耗时 OCR 前校验重试策略，调用方和图像放大器共用同一倍率约束。
+    for scale in goodsInventoryVotingScales + preparedInventoryVotingScales {
+      try validateOCRScale(scale)
+    }
     guard let cg = image.cgImage else { throw StockHistoryError.invalid("无法读取截图像素") }
     StockDiagnostics.log("识别开始 revision=\(recognitionRevision) 图像=\(cg.width)x\(cg.height)")
     let recognitionImage = try textImage(cg)
@@ -2096,7 +2109,7 @@ enum StockHistoryProcessor {
         // 预制浅灰输入框继续以不同倍率复读，保留先前全部证据，最多增加六次。
         let crop = CGRect(x: quantityX, y: start, width: CGFloat(cg.width) - quantityX,
           height: min(Double(cg.height), end) - start)
-        for scale in [3, 4, 5] {
+        for scale in preparedInventoryVotingScales {
           if hasInventoryConsensus(preparedRows[index]) { break }
           progress("正在投票复核预制库存 · \(index + 1)/\(preparedRows.count)")
           let raw = try inventoryRow(cg, crop: crop, scale: scale, horizontalOrder: true,
@@ -2165,7 +2178,7 @@ enum StockHistoryProcessor {
         let enhanced = try inventoryRow(clean, crop: crop, scale: 4,
           diagnosticContext: "库存局部增强图")
         output[index] = appendFocusedInventoryReadings(row, raw: raw, clean: enhanced)
-        for scale in [2, 4, 5] {
+        for scale in goodsInventoryVotingScales {
           if hasInventoryConsensus(output[index]) { break }
           progress("正在投票复核库存 · \(index + 1)/\(rows.count)")
           // 扩大为整个行带，避免首轮文本边界遗漏冷藏/冷冻；改变倍率及去水印方式。
@@ -2529,7 +2542,8 @@ enum StockHistoryProcessor {
     stockColumnStart: CGFloat? = nil, horizontalOrder: Bool = false,
     requiredPattern: String? = nil, recognitionLevel: VNRequestTextRecognitionLevel = .accurate,
     isolatedNumber: Bool = false, diagnosticContext: String? = nil) throws -> [StockOCRCell] {
-    guard (1...4).contains(scale), crop.width > 0, crop.height > 0,
+    try validateOCRScale(scale)
+    guard crop.width > 0, crop.height > 0,
       crop.minX >= 0, crop.minY >= 0,
       crop.maxX <= CGFloat(source.width), crop.maxY <= CGFloat(source.height),
       let tile = source.cropping(to: crop),

@@ -152,6 +152,36 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(StockHistoryProcessor.hasInventoryConsensus(row([full, full, full])))
   }
 
+  func testVotingScalesMatchImageResizingContractAndRejectFiveImmediately() throws {
+    let sequences = [StockHistoryProcessor.goodsInventoryVotingScales,
+      StockHistoryProcessor.preparedInventoryVotingScales]
+    let format = UIGraphicsImageRendererFormat(); format.scale = 1
+    // 最新故障日志中的第 4 行为 343×143 像素，第三轮放大在 OCR 前失败。
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 343, height: 143), format: format).image { context in
+      UIColor.white.setFill(); context.fill(CGRect(x: 0, y: 0, width: 343, height: 143))
+    }
+    let cg = try XCTUnwrap(image.cgImage)
+    for scales in sequences {
+      XCTAssertEqual(scales.count, 3)
+      XCTAssertEqual(Set(scales).count, scales.count)
+      for scale in scales {
+        try StockHistoryProcessor.validateOCRScale(scale)
+        let enlarged = try StockHistoryProcessor.enlargedOCRTile(cg, scale: scale)
+        XCTAssertEqual(enlarged.width, 343 * scale)
+        XCTAssertEqual(enlarged.height, 143 * scale)
+        XCTAssertNoThrow(try StockHistoryProcessor.inventoryRow(cg,
+          crop: CGRect(x: 0, y: 0, width: 343, height: 143), scale: scale))
+      }
+    }
+    for invalid in [0, 5] {
+      XCTAssertThrowsError(try StockHistoryProcessor.enlargedOCRTile(cg, scale: invalid))
+      XCTAssertThrowsError(try StockHistoryProcessor.inventoryRow(cg,
+        crop: CGRect(x: 0, y: 0, width: 343, height: 143), scale: invalid)) { error in
+        XCTAssertTrue(error.localizedDescription.contains("OCR 放大倍数无效"))
+      }
+    }
+  }
+
   func testProductSeedPreservesUserChangesAndDeletedEntries() throws {
     func product(_ code: String, _ name: String) -> [String: Any] {
       ["id": code, "code": code, "name": name, "specification": "1L*12盒/箱",
