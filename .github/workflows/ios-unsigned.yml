@@ -1,0 +1,126 @@
+name: LuckinStocktaking unsigned IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 检查并构建 unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      COCOAPODS_DISABLE_STATS: 'true'
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.1'
+          cache: true
+
+      - name: 安装 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: 输出构建工具版本
+        run: |
+          set -euo pipefail
+          flutter --version
+          python3 --version
+          xcodebuild -version
+          pod --version
+
+      - name: 安装锁定的 Dart 依赖
+        run: flutter pub get --enforce-lockfile
+
+      - name: 静态分析与 Flutter 测试
+        run: |
+          set -euo pipefail
+          flutter analyze
+          flutter test --no-pub -j 1
+
+      - name: 下载并校验 OCR 模型
+        run: python3 tools/fetch_ocr_models.py
+
+      - name: 构建模拟器应用
+        run: flutter build ios --no-pub --simulator --debug
+
+      - name: 运行 iOS 原生规则测试
+        run: |
+          set -euo pipefail
+          simulator_id="$(xcrun simctl list devices available -j | ruby -rjson -e 'device = JSON.parse(STDIN.read).fetch("devices").values.flatten.find { |item| item.fetch("name").start_with?("iPhone") && item.fetch("isAvailable") }; abort "No available iPhone simulator" unless device; puts device.fetch("udid")')"
+          mkdir -p build/ios/test-results
+          xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner -configuration Debug \
+            -only-testing:RunnerTests/RunnerTests \
+            -destination "platform=iOS Simulator,id=$simulator_id" -parallel-testing-enabled NO \
+            -resultBundlePath "$GITHUB_WORKSPACE/build/ios/test-results/RunnerTests.xcresult" \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/ios/test-results/native-regression.log
+
+      - name: 构建无签名真机应用与快捷指令
+        run: flutter build ios --no-pub --release --no-codesign
+
+      - name: 打包 unsigned IPA
+        run: |
+          set -euo pipefail
+          app_path="$GITHUB_WORKSPACE/build/ios/iphoneos/Runner.app"
+          ipa_path="$GITHUB_WORKSPACE/build/ios/ipa/luckinstocktaking-unsigned.ipa"
+          package_dir="$(mktemp -d)"
+          trap 'rm -rf "$package_dir"' EXIT
+          test -d "$app_path"
+          mkdir -p "$package_dir/Payload"
+          cp -R "$app_path" "$package_dir/Payload/Runner.app"
+          mkdir -p "$(dirname "$ipa_path")"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$package_dir/Payload" "$ipa_path"
+          test -s "$ipa_path"
+
+      - name: 解包验收 IPA 内容
+        run: |
+          set -euo pipefail
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          /usr/bin/ditto -x -k build/ios/ipa/luckinstocktaking-unsigned.ipa "$verify_dir"
+          app_dir="$verify_dir/Payload/Runner.app"
+          test -d "$app_dir"
+          bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_dir/Info.plist")"
+          test "$bundle_id" = 'com.luckinstocktaking.luckinstocktaking'
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_dir/Info.plist")"
+          test -s "$app_dir/$executable"
+          test ! -d "$app_dir/PlugIns/StockKeyboard.appex"
+          test ! -d "$app_dir/PlugIns/StockCapture.appex"
+          test -d "$app_dir/Metadata.appintents"
+          test -n "$(ls -A "$app_dir/Metadata.appintents")"
+          diff -r ios/Runner/OCRModels "$app_dir/OCRModels"
+          echo "IPA verified: bundle=$bundle_id"
+
+      - name: 上传 unsigned IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: luckinstocktaking-unsigned
+          path: build/ios/ipa/luckinstocktaking-unsigned.ipa
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: 保留原生测试结果和 Xcode 日志
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: luckinstocktaking-ios-diagnostics
+          path: |
+            build/ios/test-results/**
+            /tmp/xcodebuild_logs/*.log
+          # 编译或测试开始前失败时尚无诊断文件，失败原因仍在步骤日志中。
+          if-no-files-found: ignore
+          retention-days: 7
