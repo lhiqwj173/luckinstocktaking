@@ -1666,13 +1666,25 @@ enum StockHistoryProcessor {
     let first = Int(top.rounded(.up)), last = Int(bottom.rounded(.down))
     let hold = max(2, image.width / 160)
     guard last - first > hold else { throw StockHistoryError.invalid("货物正文高度不足") }
-    let backgrounds = (first..<last).map { y -> UInt8 in
-      var samples = (0..<64).map { index -> UInt8 in
-        let x = min(image.width - 1, max(0, Int(Double(image.width) * (0.01 + Double(index) * 0.98 / 63))))
-        return pixels[y * image.width + x]
+    // 横向采样列对所有行相同，预先计算并拆分数值表达式，避免 Swift 类型检查超时。
+    let width: Int = image.width
+    let floatingWidth: Double = Double(width)
+    var sampleColumns: [Int] = []
+    sampleColumns.reserveCapacity(64)
+    for index in 0..<64 {
+      let fraction: Double = 0.01 + Double(index) * 0.98 / 63.0
+      let column: Int = Int(floatingWidth * fraction)
+      sampleColumns.append(min(width - 1, max(0, column)))
+    }
+    var backgrounds = [UInt8](repeating: 0, count: last - first)
+    var samples = [UInt8](repeating: 0, count: 64)
+    for y in first..<last {
+      let rowOffset: Int = y * width
+      for index in 0..<64 {
+        samples[index] = pixels[rowOffset + sampleColumns[index]]
       }
       samples.sort()
-      return samples[32]
+      backgrounds[y - first] = samples[32]
     }
     func background(_ y: Int) -> UInt8 { backgrounds[y - first] }
     func white(_ y: Int) -> Bool { background(y) > 250 }
