@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'stock_export.dart';
 import 'stock_history.dart';
 import 'stock_inventory_view.dart';
+import 'stock_latest_page.dart';
 import 'stock_comparison.dart';
 import 'stock_comparison_page.dart';
 import 'stock_product.dart';
@@ -334,6 +335,15 @@ class _StockHistoryPageState extends State<StockHistoryPage>
       appBar: AppBar(
         title: const Text('旧盘点单'),
         actions: [
+          IconButton(
+            tooltip: '最新品类库存',
+            icon: const Icon(Icons.inventory_2_outlined),
+            onPressed: _busy
+                ? null
+                : () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const LatestStockPage()),
+                  ),
+          ),
           IconButton(
             icon: const Icon(Icons.tune),
             tooltip: '识别模型设置',

@@ -6,6 +6,7 @@ import 'catalog_store.dart';
 import 'catalog_tsv.dart';
 import 'shortcut_guide.dart';
 import 'stock_history_page.dart';
+import 'stock_latest_page.dart';
 import 'stock_history.dart';
 
 void main() => runApp(const StocktakingApp());
@@ -377,6 +378,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(
                         builder: (_) => const StockHistoryPage(),
+                      ),
+                    ),
+                  ),
+                ),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.inventory_2_outlined),
+                    title: const Text('最新品类库存'),
+                    subtitle: const Text('查询各品类最近录入的库存及来源盘点单'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const LatestStockPage(),
                       ),
                     ),
                   ),
