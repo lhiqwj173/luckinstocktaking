@@ -519,7 +519,8 @@ class RunnerTests: XCTestCase {
 
   func testPreparedFooterUsesOperationLayoutForNoisyTitlesAtDifferentScales() throws {
     // 校验5的首轮真实 OCR 坐标。首条「修改」被水印吞并，仍有第二条操作与时间配对。
-    for scale in [CGFloat(1), 473.0 / 828, 320.0 / 828] {
+    let scales: [CGFloat] = [1, 473.0 / 828, 320.0 / 828]
+    for scale in scales {
       func cell(_ text: String, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat,
         _ height: CGFloat = 31) -> StockOCRCell {
         StockOCRCell(text: text, confidence: 0.5,
@@ -569,14 +570,13 @@ class RunnerTests: XCTestCase {
     let valid = material + [title, action, timestamp]
     XCTAssertEqual(StockTableParser.preparedBottom(valid, headers: headers), 120)
     XCTAssertEqual(try StockTableParser.preparedRows(valid).count, 1, "仅有折行名称时也能确认页脚")
-    let invalid = [
-      material + [title, action], // 缺少时间。
-      material + [title, timestamp], // 缺少操作。
-      material + [title, action, cell(timestamp.text, 580, 250)], // 时间不在同一行。
-      material + [title, action, cell(timestamp.text, 20, 200)], // 时间不在右列。
-      material + [cell(title.text, 330, 120), action, timestamp], // 标题不在名称列。
-      valid + [cell("【冷萃咖啡液】-预制作", 20, 160)], // 候选标题后仍有真实物料。
-    ]
+    var invalid: [[StockOCRCell]] = []
+    invalid.append(material + [title, action]) // 缺少时间。
+    invalid.append(material + [title, timestamp]) // 缺少操作。
+    invalid.append(material + [title, action, cell(timestamp.text, 580, 250)]) // 时间不在同一行。
+    invalid.append(material + [title, action, cell(timestamp.text, 20, 200)]) // 时间不在右列。
+    invalid.append(material + [cell(title.text, 330, 120), action, timestamp]) // 标题不在名称列。
+    invalid.append(valid + [cell("【冷萃咖啡液】-预制作", 20, 160)]) // 候选标题后仍有真实物料。
     for cells in invalid {
       XCTAssertEqual(StockTableParser.preparedBottom(cells, headers: headers), .greatestFiniteMagnitude)
       XCTAssertThrowsError(try StockTableParser.preparedRows(cells), "证据不足时必须显式失败")
