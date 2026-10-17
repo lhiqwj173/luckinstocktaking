@@ -350,6 +350,74 @@ enum StockTableParser {
     return nil
   }
 
+  /// 页脚错字只用于定位分区，不改写物料或数量。含前置水印的短标题必须同时
+  /// 满足名称列位置、后续操作与时间配对、两者之间没有完整物料三项约束。
+  static func preparedBottom(_ cells: [StockOCRCell],
+    headers: (name: StockOCRCell, stock: StockOCRCell)) -> CGFloat {
+    let top = max(headers.name.box.maxY, headers.stock.box.maxY)
+    let boundary = (headers.name.box.maxX + headers.stock.box.minX) / 2
+    let below = cells.filter { $0.box.minY > top }
+    let timestamps = below.filter {
+      $0.box.minX >= boundary && StockOCRRefinement.compact($0.text).range(of:
+        "^20[0-9]{2}[-/.][0-9]{1,2}[-/.][0-9]{1,2}T?[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?$",
+        options: .regularExpression) != nil
+    }
+    let operations = below.filter { action in
+      let text = StockOCRRefinement.compact(action.text)
+      guard action.box.minX < boundary,
+        ["修改", "新建", "系统新建"].contains(text) else { return false }
+      return timestamps.contains {
+        $0.box.minX > action.box.maxX &&
+          abs($0.box.midY - action.box.midY) <= max($0.box.height, action.box.height)
+      }
+    }
+    func containsPreparedName(from start: CGFloat, to end: CGFloat) -> Bool {
+      let name = below.filter {
+        $0.box.midY > start && $0.box.midY < end && $0.box.minX < boundary &&
+          !isStrayPreparedCell($0)
+      }.sorted { $0.box.midY == $1.box.midY ? $0.box.minX < $1.box.minX : $0.box.midY < $1.box.midY }
+        .map { StockOCRRefinement.compact($0.text) }.joined()
+      // 尾字允许折行，例如上一块以「预」结尾，下一块只有「处理」。
+      return name.contains("预制作") || name.contains("预处理")
+    }
+    let markers = below.filter { cell in
+      let text = StockOCRRefinement.compact(cell.text)
+      // 完整名称即使包含「其他信息」，也不能被识别为页脚。
+      guard cell.box.minX < boundary, !text.contains("预"), !text.contains("制作"),
+        !text.contains("处理") else { return false }
+      if StockOCRRefinement.isFooterLabel(text) {
+        // 名称可能在下一块才出现「预制作」；不能仅凭当前块中的分节关键词截断。
+        return !containsPreparedName(from: cell.box.minY, to: .greatestFiniteMagnitude)
+      }
+      guard isNoisyFooterTitle(text),
+        abs(cell.box.minX - headers.name.box.minX) <= max(cell.box.height, headers.name.box.height) * 1.5,
+        cell.box.maxX < headers.stock.box.minX,
+        containsPreparedName(from: top, to: cell.box.minY),
+        let operation = operations.filter({ $0.box.minY > cell.box.maxY })
+          .min(by: { $0.box.minY < $1.box.minY }),
+        operation.box.minY - cell.box.maxY <= max(cell.box.height, headers.name.box.height) * 8,
+        !containsPreparedName(from: cell.box.maxY, to: operation.box.minY) else { return false }
+      StockDiagnostics.log("预制页脚结构确认 title=\(cell.text)@\(cell.box) operation=\(operation.text)@\(operation.box)")
+      return true
+    }
+    return markers.map { $0.box.minY }.min() ?? .greatestFiniteMagnitude
+  }
+
+  /// 允许短分节标题两侧少量 OCR 噪声；词义残片仍须存在，不能把任意短品名当标题。
+  /// 此规则不能单独用于截断表格，必须由 preparedBottom 校验版面与操作记录。
+  static func isNoisyFooterTitle(_ text: String) -> Bool {
+    let value = StockOCRRefinement.compact(text)
+    guard (3...8).contains(value.count), !value.contains("预"), !value.contains("制"),
+      !value.contains("处理") else { return false }
+    for (prefix, hints) in [("其他", "信息思"), ("其它", "信息思"), ("历史", "记录绿")] {
+      guard let range = value.range(of: prefix),
+        value.distance(from: value.startIndex, to: range.lowerBound) <= 2 else { continue }
+      let tail = value[range.upperBound...]
+      if (1...4).contains(tail.count), tail.contains(where: { hints.contains($0) }) { return true }
+    }
+    return false
+  }
+
   /// 预制物料没有 GS 货号，以完整的制作/处理名称为行锚点，仍按像素位置配对库存。
   static func preparedRows(_ cells: [StockOCRCell],
     retryInventory: ((CGFloat, CGFloat, CGFloat) throws -> [StockOCRCell]?)? = nil) throws -> [StockTextLine] {
@@ -362,9 +430,7 @@ enum StockTableParser {
     let nameHeader = headers.name
     let stockHeader = headers.stock
     let top = max(nameHeader.box.maxY, stockHeader.box.maxY)
-    let bottom = ordered.first(where: { cell in
-      cell.box.minY > top && StockOCRRefinement.isFooterLabel(cell.text)
-    })?.box.minY ?? .greatestFiniteMagnitude
+    let bottom = preparedBottom(ordered, headers: headers)
     let boundary = (nameHeader.box.maxX + stockHeader.box.minX) / 2
     // 预制输入框的数字可在货物库存列起点左侧；用预制表头自身定位，保留左侧空白。
     let quantityLeft = max(boundary, stockHeader.box.minX - stockHeader.box.height)
@@ -1351,7 +1417,7 @@ enum StockDocumentNaming {
 }
 
 enum StockHistoryProcessor {
-  static let recognitionRevision = 25
+  static let recognitionRevision = 26
   static let supportedOCRScales = 1...4
   static let goodsInventoryVotingScales = [2, 3, 4]
   static let preparedInventoryVotingScales = [1, 3, 4]

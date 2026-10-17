@@ -517,6 +517,78 @@ class RunnerTests: XCTestCase {
     }
   }
 
+  func testPreparedFooterUsesOperationLayoutForNoisyTitlesAtDifferentScales() throws {
+    // 校验5的首轮真实 OCR 坐标。首条「修改」被水印吞并，仍有第二条操作与时间配对。
+    for scale in [CGFloat(1), 473.0 / 828, 320.0 / 828] {
+      func cell(_ text: String, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat,
+        _ height: CGFloat = 31) -> StockOCRCell {
+        StockOCRCell(text: text, confidence: 0.5,
+          box: CGRect(x: x * scale, y: y * scale, width: width * scale, height: height * scale))
+      }
+      for title in ["砂其他信思", "沙其它信鼻", "水历史记绿"] {
+        let cells = [
+          cell("预制物料名称", 39, 27519, 167), cell("实盘总库存", 431, 27519, 150),
+          cell("【鲜橙-清洗（全国）】预处理", 39, 27605, 332),
+          cell("6", 489, 27609, 19, 24), cell("个", 557, 27604, 36, 36),
+          cell("【香水柠檬-清洗（全国）】预", 39, 27679, 332), cell("处理", 39, 27718, 56),
+          cell("4", 489, 27701, 19, 24), cell("个", 559, 27699, 29, 29),
+          cell("26", 789, 27728, 37, 26), // 同一行右侧真实 OCR 水印残片，不可凭空删除。
+          cell("【冷萃咖啡液】-预制作", 41, 27789, 262),
+          cell("1100", 463, 27791, 68, 27), cell("毫升", 561, 27793, 49, 26),
+          cell(title, 0, 27868, 152, 65), cell("操作人", 39, 27965, 85),
+          cell("2026-10-16 22:04", 579, 27965, 215, 23),
+          cell("系统", 39, 28040, 56, 29), cell("新建", 135, 28040, 56, 29),
+          cell("2026-10-16 04:00", 578, 28040, 210, 22), cell("历史记录", 39, 28229, 111),
+        ]
+        let headers = try XCTUnwrap(StockTableParser.preparedHeaders(cells))
+        XCTAssertEqual(StockTableParser.preparedBottom(cells, headers: headers), 27868 * scale, accuracy: 0.001)
+        for input in [cells, Array(cells.reversed())] {
+          let rows = try StockTableParser.preparedRows(input)
+          XCTAssertEqual(rows.count, 3)
+          XCTAssertEqual(rows.map { $0.cells[1] }, ["6个", "4个26", "1100毫升"])
+          XCTAssertFalse(rows[0].inventoryUncertain ?? true)
+          XCTAssertTrue(rows[1].inventoryUncertain ?? false, "数量混入水印后仍须复核，不能因边界修复而自动确认")
+          XCTAssertFalse(rows[2].inventoryUncertain ?? true)
+        }
+        // 确认边界不能掩盖真实名称缺字。
+        XCTAssertThrowsError(try StockTableParser.preparedRows(cells.filter { $0.text != "处理" }))
+      }
+    }
+  }
+
+  func testNoisyFooterRequiresAlignedTimestampAndCannotHideFollowingMaterial() throws {
+    func cell(_ text: String, _ x: CGFloat, _ y: CGFloat) -> StockOCRCell {
+      StockOCRCell(text: text, confidence: 0.9, box: CGRect(x: x, y: y, width: 100, height: 20))
+    }
+    let headers = (name: cell("预制物料名称", 20, 0), stock: cell("实盘总库存", 440, 0))
+    let material = [headers.name, headers.stock,
+      cell("【香水柠檬】预", 20, 50), cell("处理", 20, 75), cell("6个", 500, 60)]
+    let title = cell("砂其他信思", 20, 120)
+    let action = cell("新建", 130, 200)
+    let timestamp = cell("2026-10-16 04:00", 580, 200)
+    let valid = material + [title, action, timestamp]
+    XCTAssertEqual(StockTableParser.preparedBottom(valid, headers: headers), 120)
+    XCTAssertEqual(try StockTableParser.preparedRows(valid).count, 1, "仅有折行名称时也能确认页脚")
+    let invalid = [
+      material + [title, action], // 缺少时间。
+      material + [title, timestamp], // 缺少操作。
+      material + [title, action, cell(timestamp.text, 580, 250)], // 时间不在同一行。
+      material + [title, action, cell(timestamp.text, 20, 200)], // 时间不在右列。
+      material + [cell(title.text, 330, 120), action, timestamp], // 标题不在名称列。
+      valid + [cell("【冷萃咖啡液】-预制作", 20, 160)], // 候选标题后仍有真实物料。
+    ]
+    for cells in invalid {
+      XCTAssertEqual(StockTableParser.preparedBottom(cells, headers: headers), .greatestFiniteMagnitude)
+      XCTAssertThrowsError(try StockTableParser.preparedRows(cells), "证据不足时必须显式失败")
+    }
+    // 包含分节关键词的完整物料名称不能触发截断。
+    let named = material + [cell("其他信息-预制作", 20, 120), cell("0克", 500, 120)]
+    XCTAssertEqual(try StockTableParser.preparedRows(named).count, 2)
+    let wrapped = material + [cell("其他信息原料", 20, 120), cell("预制作", 20, 145),
+      cell("0克", 500, 130), cell("其他信息", 20, 200)]
+    XCTAssertEqual(try StockTableParser.preparedRows(wrapped).count, 2)
+  }
+
   func testPreparedQuantityMixedWithWatermarkCharactersStaysUncertain() throws {
     func cell(_ text: String, _ x: Double, _ y: Double) -> StockOCRCell {
       StockOCRCell(text: text, confidence: 0.95, box: CGRect(x: x, y: y, width: 100, height: 20))
