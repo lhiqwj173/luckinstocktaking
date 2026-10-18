@@ -3,8 +3,13 @@ import 'package:flutter/material.dart';
 import 'stock_inventory.dart';
 
 class StockInventoryView extends StatelessWidget {
-  const StockInventoryView({super.key, required this.inventory});
+  const StockInventoryView({
+    super.key,
+    required this.inventory,
+    this.totalStyle,
+  });
   final StockInventory inventory;
+  final TextStyle? totalStyle;
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -17,7 +22,7 @@ class StockInventoryView extends StatelessWidget {
         if (inventory.parts['库存'] case final total? when total.hasValue)
           SelectableText(
             total.display,
-            style: const TextStyle(fontWeight: FontWeight.w600),
+            style: totalStyle ?? const TextStyle(fontWeight: FontWeight.w600),
           ),
         if (inventory.totalMissing && inventory.hasValue)
           Text(

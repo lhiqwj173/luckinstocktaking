@@ -93,6 +93,94 @@ class _LatestStockPageState extends State<LatestStockPage>
     super.dispose();
   }
 
+  Table _table(List<TableRow> rows) {
+    final theme = Theme.of(context);
+    return Table(
+      columnWidths: const {0: FlexColumnWidth(3), 1: FlexColumnWidth(2)},
+      border: TableBorder.all(color: theme.colorScheme.outlineVariant),
+      defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+      children: rows,
+    );
+  }
+
+  Widget _recordTable(LatestStockRecord record, int index) {
+    final theme = Theme.of(context);
+    return _table([
+      for (final line in record.lines)
+        TableRow(
+          decoration: BoxDecoration(
+            color: index.isEven
+                ? theme.colorScheme.surfaceContainerLow
+                : theme.colorScheme.surface,
+          ),
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    record.category == 'prepared' ? '预制物料' : '货物',
+                    style: theme.textTheme.labelSmall,
+                  ),
+                  SelectableText(
+                    record.name,
+                    style: theme.textTheme.titleSmall,
+                  ),
+                  if (record.product case final product?) ...[
+                    if (product.specification.isNotEmpty)
+                      Text(product.specification),
+                    if (product.code.isNotEmpty) Text(product.code),
+                  ],
+                  Text(
+                    record.confirmed ? '已校对' : '待校对 · ${line.pendingReason}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: record.confirmed
+                          ? theme.colorScheme.onSurfaceVariant
+                          : theme.colorScheme.error,
+                    ),
+                  ),
+                  if (!line.identityConfirmed && record.product != null)
+                    Text('品类待确认：${line.cells[0]}'),
+                  if (record.sameTimestamp) const Text('存在录入时间相同的最新单据，请核对来源。'),
+                  if (record.lines.length > 1)
+                    const Text('同一单据存在重复品类，请打开来源核对。'),
+                  const SizedBox(height: 8),
+                  Text(
+                    '来源：${record.document.title}',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  Text(
+                    '录入时间：${record.document.createdAt.toLocal().toString().substring(0, 19)}',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  TextButton.icon(
+                    onPressed: () => _open(record),
+                    icon: const Icon(Icons.receipt_long_outlined, size: 16),
+                    label: const Text('查看来源盘点单'),
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      textStyle: theme.textTheme.labelSmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: StockInventoryView(
+                inventory: line.inventory,
+                totalStyle: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final records = _records;
@@ -181,62 +269,32 @@ class _LatestStockPageState extends State<LatestStockPage>
                     )
                   : ListView.builder(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                      itemCount: matches.length,
+                      itemCount: matches.length + 1,
                       itemBuilder: (context, index) {
-                        final record = matches[index];
-                        return Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                        if (index == 0) {
+                          return _table([
+                            TableRow(
+                              decoration: BoxDecoration(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .primaryContainer,
+                              ),
                               children: [
-                                Text(
-                                  record.name,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .titleMedium,
-                                ),
-                                if (record.product case final product?)
-                                  Text(
-                                    [product.specification, product.code]
-                                        .where((text) => text.isNotEmpty)
-                                        .join(' · '),
-                                  ),
-                                Text(
-                                  record.category == 'prepared' ? '预制物料' : '货物',
-                                ),
-                                if (record.sameTimestamp)
-                                  const Text('存在录入时间相同的最新单据，已分别列出，请核对来源。'),
-                                const SizedBox(height: 8),
-                                for (final line in record.lines) ...[
-                                  if (!line.identityConfirmed)
-                                    Text('品类待确认：${line.cells[0]}'),
-                                  StockInventoryView(inventory: line.inventory),
-                                  if (!record.confirmed)
-                                    Text(
-                                      '待校对 · ${line.inventory.reviewStatus}',
+                                for (final title in ['货物规格名称', '实盘总库存'])
+                                  Padding(
+                                    padding: const EdgeInsets.all(12),
+                                    child: Text(
+                                      title,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
                                     ),
-                                ],
-                                if (record.lines.length > 1)
-                                  const Text('同一单据存在重复品类，请打开来源核对。'),
-                                if (!record.lines.any(
-                                  (line) => line.inventory.hasValue,
-                                ))
-                                  const Text('最近记录未提供可确认的数量，请核对来源单据。'),
-                                const SizedBox(height: 8),
-                                Text('来源：${record.document.title}'),
-                                Text(
-                                  '录入时间：${record.document.createdAt.toLocal().toString().substring(0, 19)}',
-                                ),
-                                TextButton.icon(
-                                  onPressed: () => _open(record),
-                                  icon: const Icon(Icons.receipt_long_outlined),
-                                  label: const Text('查看来源盘点单'),
-                                ),
+                                  ),
                               ],
                             ),
-                          ),
-                        );
+                          ]);
+                        }
+                        return _recordTable(matches[index - 1], index - 1);
                       },
                     ),
             ),
