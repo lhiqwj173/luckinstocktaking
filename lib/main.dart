@@ -1,9 +1,12 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'category.dart';
 import 'catalog_store.dart';
 import 'catalog_tsv.dart';
+import 'catalog_file.dart';
 import 'shortcut_guide.dart';
 import 'stock_history_page.dart';
 import 'stock_latest_page.dart';
@@ -42,6 +45,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String? _error;
   bool _loading = true;
   bool _openingHistory = false;
+  bool _transferringCatalog = false;
 
   @override
   void initState() {
@@ -233,7 +237,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             controller: controller,
             maxLines: 10,
             decoration: const InputDecoration(
-              hintText: '从 Excel 复制 5 列，包含首行表头，再粘贴到这里',
+              hintText: '从 Excel 复制 6 列（兼容旧 5 列），包含首行表头，再粘贴到这里',
               border: OutlineInputBorder(),
             ),
           ),
@@ -254,46 +258,81 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (table == null || !mounted) return;
     try {
       final imported = importCatalogTsv(table);
-      final merged = mergeCatalog(_categories, imported);
-      final oldNames = _categories
-          .map((item) => normalizeName(item.name))
-          .toSet();
-      final additions = imported
-          .where((item) => !oldNames.contains(normalizeName(item.name)))
-          .length;
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('确认导入'),
-          content: Text(
-            '将新增 $additions 个品类，更新 ${imported.length - additions} 个同名品类。',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('保存'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true) return;
-      await _store.save(merged);
-      if (mounted) {
-        setState(() {
-          _categories = merged;
-          _selected = null;
-          _result = null;
-          _error = null;
-        });
-      }
+      await _confirmCatalogImport(imported);
     } on FormatException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } on PlatformException catch (error) {
       if (mounted) setState(() => _error = error.message ?? error.code);
+    }
+  }
+
+  Future<void> _transferCatalog(bool exporting) async {
+    if (_transferringCatalog) return;
+    setState(() => _transferringCatalog = true);
+    try {
+      if (exporting) {
+        final json = exportCatalogFile(_categories);
+        await StockHistoryStore().shareBytes(
+          name: '品类规则.json',
+          bytes: Uint8List.fromList(utf8.encode(json)),
+        );
+      } else {
+        final json = await _store.pickImportFile();
+        if (json == null || !mounted) return;
+        await _confirmCatalogImport(importCatalogFile(json));
+      }
+    } on FormatException catch (error) {
+      _showCatalogTransferError(error.message);
+    } on PlatformException catch (error) {
+      _showCatalogTransferError(error.message ?? error.code);
+    } finally {
+      if (mounted) setState(() => _transferringCatalog = false);
+    }
+  }
+
+  void _showCatalogTransferError(String message) {
+    if (!mounted) return;
+    setState(() => _error = message);
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _confirmCatalogImport(List<Category> imported) async {
+    final merged = mergeCatalog(_categories, imported);
+    final oldNames = _categories
+        .map((item) => normalizeName(item.name))
+        .toSet();
+    final additions = imported
+        .where((item) => !oldNames.contains(normalizeName(item.name)))
+        .length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认导入'),
+        content: Text(
+          '将新增 $additions 个品类，更新 ${imported.length - additions} 个同名品类，其余品类保留。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _store.save(merged);
+    if (mounted) {
+      setState(() {
+        _categories = merged;
+        _selected = null;
+        _result = null;
+        _error = null;
+      });
     }
   }
 
@@ -489,25 +528,44 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         ),
                       ),
                     ),
-                    IconButton(
-                      onPressed: _copyTable,
-                      icon: const Icon(Icons.content_copy),
-                      tooltip: '复制品类表格到 Excel',
+                    PopupMenuButton<String>(
+                      enabled: !_transferringCatalog,
+                      tooltip: '导入导出品类规则',
+                      icon: const Icon(Icons.import_export),
+                      onSelected: (value) {
+                        switch (value) {
+                          case 'export':
+                            _transferCatalog(true);
+                          case 'import':
+                            _transferCatalog(false);
+                          case 'copy':
+                            _copyTable();
+                          case 'paste':
+                            _importTable();
+                        }
+                      },
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(value: 'export', child: Text('导出规则文件')),
+                        PopupMenuItem(value: 'import', child: Text('导入规则文件')),
+                        PopupMenuItem(
+                          value: 'copy',
+                          child: Text('复制品类表格到 Excel'),
+                        ),
+                        PopupMenuItem(
+                          value: 'paste',
+                          child: Text('从 Excel 粘贴批量导入'),
+                        ),
+                      ],
                     ),
                     IconButton(
-                      onPressed: _importTable,
-                      icon: const Icon(Icons.table_rows),
-                      tooltip: '从 Excel 粘贴批量导入',
-                    ),
-                    IconButton(
-                      onPressed: () => _edit(),
+                      onPressed: _transferringCatalog ? null : () => _edit(),
                       icon: const Icon(Icons.add),
                       tooltip: '新增品类',
                     ),
                   ],
                 ),
                 const Text(
-                  '品类较多时，复制表格到 Excel 修改，再复制包含表头的 6 列批量导入；旧 5 列表格仍可导入，默认不允许多份。“其他”填写皮重，固定类别的皮重留空。同名品类会更新，其余品类保留。',
+                  '点击右侧导入导出按钮，可导出规则文件保存或分享，再从文件导入。也可复制表格到 Excel 修改，再粘贴包含表头的 6 列批量导入；兼容旧 5 列，默认不允许多份。“其他”填写皮重，固定类别的皮重留空。同名品类会更新，其余品类保留。',
                 ),
                 if (_categories.isEmpty) const Text('暂无品类。点击右侧加号录入。'),
                 ..._categories.map(
@@ -518,6 +576,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         '${category.type.label} · (称重 − ${category.tareGrams} 克) ÷ ${category.singleServingGrams} 克 · ${category.allowMultiple ? '允许多份，结果 ≥0.1 份' : '结果 0.1～0.9 份'}',
                       ),
                       trailing: PopupMenuButton<String>(
+                        enabled: !_transferringCatalog,
                         onSelected: (value) {
                           switch (value) {
                             case 'edit':

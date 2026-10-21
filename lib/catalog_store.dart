@@ -5,10 +5,7 @@ import 'package:flutter/services.dart';
 import 'category.dart';
 
 class CatalogDiagnostics {
-  const CatalogDiagnostics({
-    required this.version,
-    required this.appBundleId,
-  });
+  const CatalogDiagnostics({required this.version, required this.appBundleId});
 
   final String version;
   final String appBundleId;
@@ -50,4 +47,8 @@ class CatalogStore {
       jsonEncode(categories.map((e) => e.toJson()).toList()),
     );
   }
+
+  /// 返回 null 只表示用户取消选择；读取错误由平台抛出。
+  Future<String?> pickImportFile() =>
+      _channel.invokeMethod<String>('importFile');
 }

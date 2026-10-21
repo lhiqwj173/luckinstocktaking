@@ -1,5 +1,53 @@
 import Flutter
 import UIKit
+import UniformTypeIdentifiers
+
+/// 只读取文件，解析、预览和持久化由 Flutter 统一处理。
+final class CatalogFileImporter: NSObject, UIDocumentPickerDelegate {
+  private var pending: FlutterResult?
+
+  func open(result: @escaping FlutterResult) {
+    guard pending == nil else {
+      result(FlutterError(code: "CATALOG_IMPORT_BUSY", message: "请先完成当前文件选择", details: nil))
+      return
+    }
+    guard let scene = UIApplication.shared.connectedScenes
+      .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
+      var presenter = scene.windows.first(where: \.isKeyWindow)?.rootViewController else {
+      result(FlutterError(code: "CATALOG_IMPORT_UNAVAILABLE", message: "无法打开文件选择器，请保持应用在前台", details: nil))
+      return
+    }
+    while let presented = presenter.presentedViewController { presenter = presented }
+    let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.json], asCopy: true)
+    picker.allowsMultipleSelection = false
+    picker.delegate = self
+    pending = result
+    presenter.present(picker, animated: true)
+  }
+
+  func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+    finish(nil)
+  }
+
+  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+    guard urls.count == 1 else {
+      finish(FlutterError(code: "INVALID_CATALOG_FILE", message: "请选择一个品类规则文件", details: nil))
+      return
+    }
+    do {
+      let json = try String(contentsOf: urls[0], encoding: .utf8)
+      finish(json)
+    } catch {
+      finish(FlutterError(code: "CATALOG_FILE_READ_FAILED", message: "读取规则文件失败：\(error.localizedDescription)", details: nil))
+    }
+  }
+
+  private func finish(_ value: Any?) {
+    guard let result = pending else { preconditionFailure("品类文件选择缺少待处理请求") }
+    pending = nil
+    result(value)
+  }
+}
 
 enum CatalogStorage {
   static let key = "catalog.v2"
@@ -34,6 +82,7 @@ enum CatalogStorageError: Error {
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var historyBridge: StockHistoryBridge?
+  private let catalogFileImporter = CatalogFileImporter()
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     historyBridge = StockHistoryBridge(messenger: engineBridge.applicationRegistrar.messenger())
@@ -41,8 +90,10 @@ enum CatalogStorageError: Error {
       name: "com.luckinstocktaking/catalog",
       binaryMessenger: engineBridge.applicationRegistrar.messenger()
     )
-    channel.setMethodCallHandler { call, result in
+    channel.setMethodCallHandler { [self] call, result in
       switch call.method {
+      case "importFile":
+        catalogFileImporter.open(result: result)
       case "diagnostics":
         guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
               let appID = Bundle.main.bundleIdentifier else {
