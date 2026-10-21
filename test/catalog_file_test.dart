@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:luckinstocktaking/catalog_file.dart';
 import 'package:luckinstocktaking/category.dart';
 import 'package:luckinstocktaking/main.dart';
+import 'package:luckinstocktaking/recent_weighing.dart';
 import 'package:luckinstocktaking/stock_history.dart';
 
 const _categories = [
@@ -99,6 +100,12 @@ void main() {
   late Map<dynamic, dynamic>? shared;
 
   setUp(() {
+    messenger.setMockMethodCallHandler(RecentWeighingStore.channel, (
+      call,
+    ) async {
+      if (call.method == 'load') return '[]';
+      throw StateError('未预期的称重调用：${call.method}');
+    });
     picked = exportCatalogFile(_categories);
     saves = [];
     shared = null;
@@ -128,6 +135,7 @@ void main() {
   });
 
   tearDown(() {
+    messenger.setMockMethodCallHandler(RecentWeighingStore.channel, null);
     messenger.setMockMethodCallHandler(channel, null);
     messenger.setMockMethodCallHandler(StockHistoryStore.channel, null);
   });
@@ -135,7 +143,16 @@ void main() {
   Future<void> openAction(WidgetTester tester, String action) async {
     await tester.pumpWidget(const StocktakingApp());
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byTooltip('导入导出品类规则'));
+    await tester.scrollUntilVisible(
+      find.byTooltip('导入导出品类规则').hitTestable(),
+      150,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     await tester.tap(find.byTooltip('导入导出品类规则'));
     await tester.pumpAndSettle();
     await tester.tap(find.text(action));

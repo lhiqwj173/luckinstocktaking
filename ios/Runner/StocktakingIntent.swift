@@ -87,6 +87,10 @@ struct IntentCategory: Decodable {
   }
 
   func calculate(weight: Double) throws -> String {
+    "\(name)：\(try calculateAmount(weight: weight))份"
+  }
+
+  func calculateAmount(weight: Double) throws -> String {
     try validate()
     guard weight.isFinite, weight >= 0 else {
       throw StocktakingError.invalidNumber
@@ -118,7 +122,7 @@ struct IntentCategory: Decodable {
       locale: Locale(identifier: "en_US_POSIX"),
       ratio
     )
-    return "\(name)：\(tenths / 10).\(tenths % 10)（\(exactRatio)）份"
+    return "\(tenths / 10).\(tenths % 10)（\(exactRatio)）"
   }
 }
 
@@ -200,7 +204,14 @@ struct CalculateStockIntent: AppIntent {
     } else {
       weight = try await $weightGrams.requestValue("请输入称重（克）")
     }
-    return .result(value: try chosen.calculate(weight: weight))
+    let amount = try chosen.calculateAmount(weight: weight)
+    guard let tare = chosen.type.fixedTareGrams ?? chosen.customTareGrams else {
+      throw StocktakingError.invalidCatalog
+    }
+    try RecentWeighingStorage.shared.append(categoryName: chosen.name, weightGrams: weight,
+      tareGrams: tare, singleServingGrams: chosen.singleServingGrams,
+      typeLabel: chosen.type.label, result: amount, source: "shortcut", allowMultiple: chosen.allowMultiple)
+    return .result(value: "\(chosen.name)：\(amount)份")
   }
 }
 

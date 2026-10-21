@@ -11,6 +11,8 @@ import 'shortcut_guide.dart';
 import 'stock_history_page.dart';
 import 'stock_latest_page.dart';
 import 'stock_history.dart';
+import 'recent_weighing.dart';
+import 'recent_weighing_view.dart';
 
 void main() => runApp(const StocktakingApp());
 
@@ -44,6 +46,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String? _result;
   String? _error;
   bool _loading = true;
+  bool _savingWeighing = false;
   bool _openingHistory = false;
   bool _transferringCatalog = false;
 
@@ -336,7 +339,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  void _calculate() {
+  Future<void> _calculate() async {
+    if (_savingWeighing) return;
     final category = _selected;
     if (category == null) {
       setState(() => _error = '请先选择明确的品类');
@@ -350,14 +354,43 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     try {
       final result = category.calculate(weight);
       setState(() {
-        _result = result;
+        _savingWeighing = true;
+        _result = null;
+        _error = null;
+      });
+      await RecentWeighingStore().append(
+        categoryName: category.name,
+        weightGrams: weight,
+        tareGrams: category.tareGrams,
+        singleServingGrams: category.singleServingGrams,
+        typeLabel: category.type.label,
+        result: result,
+        allowMultiple: category.allowMultiple,
+      );
+      RecentWeighingStore.changes.value++;
+      if (!mounted) return;
+      setState(() {
+        if (identical(_selected, category) &&
+            double.tryParse(_weight.text.trim()) == weight) {
+          _result = result;
+        }
         _error = null;
       });
     } on FormatException catch (error) {
+      if (!mounted) return;
       setState(() {
         _result = null;
         _error = error.message;
       });
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(() {
+          _result = null;
+          _error = '称重记录保存失败：${error.message ?? error.code}';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _savingWeighing = false);
     }
   }
 
@@ -496,7 +529,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  FilledButton(onPressed: _calculate, child: const Text('计算')),
+                  FilledButton(
+                    onPressed: _savingWeighing ? null : _calculate,
+                    child: Text(_savingWeighing ? '正在保存…' : '计算'),
+                  ),
                 ],
                 if (_result != null)
                   Padding(
@@ -516,6 +552,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       ),
                     ),
                   ),
+                const SizedBox(height: 24),
+                const RecentWeighingView(),
                 const Divider(height: 40),
                 Row(
                   children: [

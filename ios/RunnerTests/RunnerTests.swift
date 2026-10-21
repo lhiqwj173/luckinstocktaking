@@ -5,6 +5,61 @@ import XCTest
 @testable import Runner
 
 class RunnerTests: XCTestCase {
+  func testRecentWeighingPersistsSnapshotsAndRetainsNewestHundred() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+    defer { try! FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("recent.json")
+    let store = RecentWeighingStorage(fileURL: url)
+    XCTAssertTrue(try store.load().isEmpty)
+    for index in 0..<102 {
+      try store.append(categoryName: "奶油 \(index)", weightGrams: 350, tareGrams: 300,
+        singleServingGrams: 100, typeLabel: "份盒称重", result: "0.5（0.500）",
+        source: index.isMultiple(of: 2) ? "app" : "shortcut", allowMultiple: false)
+    }
+    let reopened = RecentWeighingStorage(fileURL: url)
+    let records = try reopened.load()
+    XCTAssertEqual(records.count, 100)
+    XCTAssertEqual(records.first?.categoryName, "奶油 101")
+    XCTAssertEqual(records.last?.categoryName, "奶油 2")
+    XCTAssertEqual(records.first?.source, "shortcut")
+    XCTAssertEqual(records.first?.tareGrams, 300)
+    XCTAssertEqual(records.first?.singleServingGrams, 100)
+    XCTAssertEqual(records.first?.result, "0.5（0.500）")
+    XCTAssertEqual(records.first?.allowMultiple, false)
+    let id = try XCTUnwrap(records.first?.id)
+    XCTAssertEqual(try reopened.delete(id: id).count, 99)
+    XCTAssertThrowsError(try reopened.delete(id: id))
+    XCTAssertEqual(try reopened.load().first?.categoryName, "奶油 100")
+    XCTAssertTrue(try reopened.clear().isEmpty)
+    XCTAssertTrue(try store.load().isEmpty)
+  }
+
+  func testRecentWeighingRejectsInvalidInputAndDoesNotOverwriteCorruption() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+    defer { try! FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("recent.json")
+    let store = RecentWeighingStorage(fileURL: url)
+    for weight in [Double.nan, Double.infinity, 299] {
+      XCTAssertThrowsError(try store.append(categoryName: "奶油", weightGrams: weight,
+        tareGrams: 300, singleServingGrams: 100, typeLabel: "份盒称重",
+        result: "0.5（0.500）", source: "app", allowMultiple: false))
+    }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    try "损坏记录".write(to: url, atomically: true, encoding: .utf8)
+    XCTAssertThrowsError(try store.load())
+    XCTAssertThrowsError(try store.append(categoryName: "奶油", weightGrams: 350,
+      tareGrams: 300, singleServingGrams: 100, typeLabel: "份盒称重",
+      result: "0.5（0.500）", source: "shortcut", allowMultiple: false))
+    XCTAssertThrowsError(try store.clear())
+    XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "损坏记录")
+    let unwritable = RecentWeighingStorage(fileURL: folder.appendingPathComponent("missing/recent.json"))
+    XCTAssertThrowsError(try unwritable.append(categoryName: "奶油", weightGrams: 350,
+      tareGrams: 300, singleServingGrams: 100, typeLabel: "份盒称重",
+      result: "0.5（0.500）", source: "app", allowMultiple: false))
+  }
+
   func testExportAcceptsCatalogJSONAndRetainsFileNameRestrictions() {
     for name in ["品类规则.json", "盘点单.xlsx", "解析调试包.zip"] {
       XCTAssertNoThrow(try StockExporter.validateFileName(name), name)

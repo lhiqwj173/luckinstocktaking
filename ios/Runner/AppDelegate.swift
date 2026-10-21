@@ -82,10 +82,12 @@ enum CatalogStorageError: Error {
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var historyBridge: StockHistoryBridge?
+  private var recentWeighingBridge: RecentWeighingBridge?
   private let catalogFileImporter = CatalogFileImporter()
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     historyBridge = StockHistoryBridge(messenger: engineBridge.applicationRegistrar.messenger())
+    recentWeighingBridge = RecentWeighingBridge(messenger: engineBridge.applicationRegistrar.messenger())
     let channel = FlutterMethodChannel(
       name: "com.luckinstocktaking/catalog",
       binaryMessenger: engineBridge.applicationRegistrar.messenger()

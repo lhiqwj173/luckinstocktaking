@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:luckinstocktaking/stock_history.dart';
 import 'package:luckinstocktaking/stock_history_page.dart';
 import 'package:luckinstocktaking/main.dart';
+import 'package:luckinstocktaking/recent_weighing.dart';
 import 'package:luckinstocktaking/stock_product.dart';
 
 Map<String, dynamic> record({String title = '人民路店 2026-09-30'}) => {
@@ -74,6 +75,17 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  setUp(() {
+    messenger.setMockMethodCallHandler(RecentWeighingStore.channel, (
+      call,
+    ) async {
+      if (call.method == 'load') return '[]';
+      throw StateError('未预期的称重调用：${call.method}');
+    });
+  });
+  tearDown(
+    () => messenger.setMockMethodCallHandler(RecentWeighingStore.channel, null),
+  );
   tearDown(
     () => messenger.setMockMethodCallHandler(StockHistoryStore.channel, null),
   );
