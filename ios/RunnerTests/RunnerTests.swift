@@ -5,6 +5,15 @@ import XCTest
 @testable import Runner
 
 class RunnerTests: XCTestCase {
+  func testExportAcceptsCatalogJSONAndRetainsFileNameRestrictions() {
+    for name in ["品类规则.json", "盘点单.xlsx", "解析调试包.zip"] {
+      XCTAssertNoThrow(try StockExporter.validateFileName(name), name)
+    }
+    for name in ["", ".规则.json", "../品类规则.json", "/tmp/品类规则.json", "目录/品类规则.json", "品类规则.txt"] {
+      XCTAssertThrowsError(try StockExporter.validateFileName(name), name)
+    }
+  }
+
   func testDiagnosticSnapshotKeepsTaskLogAndStructuredCoordinates() throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)

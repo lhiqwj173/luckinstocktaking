@@ -911,13 +911,17 @@ enum StockExporter {
   /// 导出文件暂存目录；每个分享单独一个子目录，面板关闭即连目录一起删除。
   private static let exportsDirectory = "StockExports"
 
-  static func shareBytes(name: String, data: Data, onFinish: @escaping () -> Void) throws {
-    guard !data.isEmpty else { throw StockHistoryError.invalid("导出内容为空") }
-    // 文件名来自 Dart 侧的单据名称，必须确认它没有路径分隔符或父目录引用。
+  static func validateFileName(_ name: String) throws {
+    // 文件名来自 Dart 侧的单据名称或品类规则备份，必须确认它没有路径分隔符或父目录引用。
     guard name == URL(fileURLWithPath: name).lastPathComponent,
-          !name.hasPrefix("."), (name.hasSuffix(".xlsx") || name.hasSuffix(".zip")) else {
+          !name.hasPrefix("."), ["xlsx", "zip", "json"].contains(URL(fileURLWithPath: name).pathExtension) else {
       throw StockHistoryError.invalid("导出文件名无效：\(name)")
     }
+  }
+
+  static func shareBytes(name: String, data: Data, onFinish: @escaping () -> Void) throws {
+    guard !data.isEmpty else { throw StockHistoryError.invalid("导出内容为空") }
+    try validateFileName(name)
     let staging = FileManager.default.temporaryDirectory
       .appendingPathComponent(exportsDirectory, isDirectory: true)
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
