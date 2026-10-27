@@ -816,6 +816,30 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(try multiple.calculate(weight: 550), "奶油：2.5（2.500）份")
   }
 
+  func testShortcutNetWeightAndHistoryPreserveGrams() throws {
+    guard #available(iOS 16.0, *) else { throw XCTSkip("快捷指令要求 iOS 16") }
+    let json = #"{"name":"原料","aliases":[],"type":"other","singleServingGrams":100,"customTareGrams":0.3,"returnNetWeight":true}"#
+    let category = try JSONDecoder().decode(IntentCategory.self, from: Data(json.utf8))
+    XCTAssertEqual(try category.calculate(weight: 0.3), "原料：0 g")
+    XCTAssertEqual(try category.calculate(weight: 0.3001), "原料：0.0001 g")
+    XCTAssertEqual(try category.calculate(weight: 125.425), "原料：125.125 g")
+    XCTAssertThrowsError(try category.calculate(weight: 0.2))
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+    defer { try! FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("recent.json")
+    let store = RecentWeighingStorage(fileURL: url)
+    try store.append(categoryName: "原料", weightGrams: 0.3001, tareGrams: 0.3,
+      singleServingGrams: 100, typeLabel: "其他", result: category.calculateAmount(weight: 0.3001),
+      source: "shortcut", allowMultiple: false, returnNetWeight: true)
+    let records = try RecentWeighingStorage(fileURL: url).load()
+    XCTAssertEqual(records.first?.result, "0.0001 g")
+    XCTAssertEqual(records.first?.returnNetWeight, true)
+    XCTAssertThrowsError(try store.append(categoryName: "原料", weightGrams: 0.3, tareGrams: 0.3,
+      singleServingGrams: 100, typeLabel: "其他", result: "0.1（0.000）",
+      source: "app", allowMultiple: false, returnNetWeight: true))
+  }
+
   private func pattern() -> CGImage {
     let format = UIGraphicsImageRendererFormat()
     format.scale = 1

@@ -135,7 +135,9 @@ class _RecentWeighingViewState extends State<RecentWeighingView>
                 if (widget.expanded) ...[
                   const SizedBox(height: 4),
                   Text(
-                    '${record.typeLabel} · 皮重 ${formatGrams(record.tareGrams)} 克 · 单份 ${formatGrams(record.singleServingGrams)} 克\n${record.allowMultiple ? '允许多份' : '限 0.1～0.9 份'} · ${record.source == 'shortcut' ? '快捷指令' : 'App 内计算'}',
+                    record.returnNetWeight
+                        ? '${record.typeLabel} · 皮重 ${formatGrams(record.tareGrams)} 克 · 返回净重（g） · ${record.source == 'shortcut' ? '快捷指令' : 'App 内计算'}'
+                        : '${record.typeLabel} · 皮重 ${formatGrams(record.tareGrams)} 克 · 单份 ${formatGrams(record.singleServingGrams)} 克\n${record.allowMultiple ? '允许多份' : '限 0.1～0.9 份'} · ${record.source == 'shortcut' ? '快捷指令' : 'App 内计算'}',
                     style: TextStyle(
                       fontSize: 12,
                       color: colors.onSurfaceVariant,
@@ -151,20 +153,23 @@ class _RecentWeighingViewState extends State<RecentWeighingView>
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  '${record.result.split('（').first} 份',
+                  record.returnNetWeight
+                      ? record.result
+                      : '${record.result.split('（').first} 份',
                   style: TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w600,
                     color: colors.primary,
                   ),
                 ),
-                Text(
-                  '比例 ${record.result.split('（').last.replaceAll('）', '')}',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: colors.onSurfaceVariant,
+                if (!record.returnNetWeight)
+                  Text(
+                    '比例 ${record.result.split('（').last.replaceAll('）', '')}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: colors.onSurfaceVariant,
+                    ),
                   ),
-                ),
               ],
             ),
           ),

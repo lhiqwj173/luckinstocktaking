@@ -48,9 +48,10 @@ struct IntentCategory: Decodable {
   let singleServingGrams: Double
   let customTareGrams: Double?
   let allowMultiple: Bool
+  let returnNetWeight: Bool
 
   private enum CodingKeys: String, CodingKey {
-    case name, aliases, type, singleServingGrams, customTareGrams, allowMultiple
+    case name, aliases, type, singleServingGrams, customTareGrams, allowMultiple, returnNetWeight
   }
 
   init(from decoder: Decoder) throws {
@@ -60,6 +61,11 @@ struct IntentCategory: Decodable {
     type = try values.decode(WeighingType.self, forKey: .type)
     singleServingGrams = try values.decode(Double.self, forKey: .singleServingGrams)
     customTareGrams = try values.decodeIfPresent(Double.self, forKey: .customTareGrams)
+    if values.contains(.returnNetWeight) {
+      returnNetWeight = try values.decode(Bool.self, forKey: .returnNetWeight)
+    } else {
+      returnNetWeight = false
+    }
     if values.contains(.allowMultiple) {
       allowMultiple = try values.decode(Bool.self, forKey: .allowMultiple)
     } else {
@@ -87,7 +93,7 @@ struct IntentCategory: Decodable {
   }
 
   func calculate(weight: Double) throws -> String {
-    "\(name)：\(try calculateAmount(weight: weight))份"
+    "\(name)：\(try calculateAmount(weight: weight))\(returnNetWeight ? "" : "份")"
   }
 
   func calculateAmount(weight: Double) throws -> String {
@@ -103,6 +109,19 @@ struct IntentCategory: Decodable {
       throw StocktakingError.invalidWeight(
         "\(tare) 克以上"
       )
+    }
+    if returnNetWeight {
+      // 按十进制输入相减，避免 Double 减法产生尾数。
+      let locale = Locale(identifier: "en_US_POSIX")
+      guard var grossDecimal = Decimal(string: String(weight), locale: locale),
+            var tareDecimal = Decimal(string: String(tare), locale: locale) else {
+        throw StocktakingError.invalidNumber
+      }
+      var result = Decimal()
+      guard NSDecimalSubtract(&result, &grossDecimal, &tareDecimal, .plain) == .noError else {
+        throw StocktakingError.invalidNumber
+      }
+      return NSDecimalNumber(decimal: result).stringValue + " g"
     }
     let ratio = net / singleServingGrams
     guard ratio.isFinite else { throw StocktakingError.invalidNumber }
@@ -210,8 +229,8 @@ struct CalculateStockIntent: AppIntent {
     }
     try RecentWeighingStorage.shared.append(categoryName: chosen.name, weightGrams: weight,
       tareGrams: tare, singleServingGrams: chosen.singleServingGrams,
-      typeLabel: chosen.type.label, result: amount, source: "shortcut", allowMultiple: chosen.allowMultiple)
-    return .result(value: "\(chosen.name)：\(amount)份")
+      typeLabel: chosen.type.label, result: amount, source: "shortcut", allowMultiple: chosen.allowMultiple, returnNetWeight: chosen.returnNetWeight)
+    return .result(value: "\(chosen.name)：\(amount)\(chosen.returnNetWeight ? "" : "份")")
   }
 }
 

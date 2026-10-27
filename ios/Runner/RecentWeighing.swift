@@ -12,6 +12,7 @@ struct RecentWeighingRecord: Codable {
   let result: String
   let source: String
   let allowMultiple: Bool
+  var returnNetWeight: Bool? = nil
 
   func validate() throws {
     guard UUID(uuidString: id) != nil,
@@ -22,7 +23,7 @@ struct RecentWeighingRecord: Codable {
           weightGrams >= tareGrams,
           singleServingGrams.isFinite, singleServingGrams > 0,
           !typeLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          result.range(of: #"^\d+\.\d（(?:\d+\.\d{3}|\d+(?:\.\d+)?e[+-]?\d+)）$"#, options: .regularExpression) != nil,
+          (returnNetWeight == true ? result.range(of: #"^\d+(?:\.\d+)?(?:e[+-]?\d+)? g$"#, options: .regularExpression) : result.range(of: #"^\d+\.\d（(?:\d+\.\d{3}|\d+(?:\.\d+)?e[+-]?\d+)）$"#, options: .regularExpression)) != nil,
           ["app", "shortcut"].contains(source) else {
       throw RecentWeighingError.invalidRecord
     }
@@ -76,13 +77,13 @@ final class RecentWeighingStorage {
   @discardableResult
   func append(categoryName: String, weightGrams: Double, tareGrams: Double,
               singleServingGrams: Double, typeLabel: String, result: String,
-              source: String, allowMultiple: Bool) throws -> [RecentWeighingRecord] {
+              source: String, allowMultiple: Bool, returnNetWeight: Bool = false) throws -> [RecentWeighingRecord] {
     try queue.sync {
       let record = RecentWeighingRecord(id: UUID().uuidString,
         createdAt: (Date().timeIntervalSince1970 * 1000).rounded(.down),
         categoryName: categoryName, weightGrams: weightGrams, tareGrams: tareGrams,
         singleServingGrams: singleServingGrams, typeLabel: typeLabel, result: result,
-        source: source, allowMultiple: allowMultiple)
+        source: source, allowMultiple: allowMultiple, returnNetWeight: returnNetWeight)
       try record.validate()
       var records = try read()
       records.insert(record, at: 0)
@@ -144,9 +145,16 @@ final class RecentWeighingBridge {
                   let source = args["source"] as? String, source == "app" else {
               throw RecentWeighingError.invalidRecord
             }
+            let returnNetWeight: Bool
+            if let raw = args["returnNetWeight"] {
+              guard let flag = raw as? Bool else { throw RecentWeighingError.invalidRecord }
+              returnNetWeight = flag
+            } else {
+              returnNetWeight = false
+            }
             records = try store.append(categoryName: name, weightGrams: weight,
               tareGrams: tare, singleServingGrams: serving, typeLabel: type, result: result,
-              source: source, allowMultiple: allowMultiple)
+              source: source, allowMultiple: allowMultiple, returnNetWeight: returnNetWeight)
           default:
             DispatchQueue.main.async { callback(FlutterMethodNotImplemented) }
             return

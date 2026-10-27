@@ -15,6 +15,7 @@ class WeighingRecord {
     required this.result,
     required this.source,
     required this.allowMultiple,
+    this.returnNetWeight = false,
   });
 
   final String id;
@@ -27,8 +28,9 @@ class WeighingRecord {
   final String result;
   final String source;
   final bool allowMultiple;
+  final bool returnNetWeight;
 
-  String get copyText => '$categoryName：$result 份';
+  String get copyText => '$categoryName：$result${returnNetWeight ? '' : ' 份'}';
 
   factory WeighingRecord.fromJson(Map<String, dynamic> json) {
     String text(String key) {
@@ -60,9 +62,14 @@ class WeighingRecord {
         json['allowMultiple'] is! bool) {
       throw const FormatException('称重记录的时间、重量或来源无效');
     }
+    final returnNetWeight = json.containsKey('returnNetWeight')
+        ? json['returnNetWeight'] as bool
+        : false;
     final result = text('result');
-    if (!RegExp(r'^\d+\.\d（(?:\d+\.\d{3}|\d+(?:\.\d+)?e[+-]?\d+)）$')
-        .hasMatch(result)) {
+    if (returnNetWeight
+        ? !RegExp(r'^\d+(?:\.\d+)?(?:e[+-]?\d+)? g$').hasMatch(result)
+        : !RegExp(r'^\d+\.\d（(?:\d+\.\d{3}|\d+(?:\.\d+)?e[+-]?\d+)）$')
+              .hasMatch(result)) {
       throw const FormatException('称重记录结果格式无效');
     }
     return WeighingRecord(
@@ -76,6 +83,7 @@ class WeighingRecord {
       result: result,
       source: source,
       allowMultiple: json['allowMultiple'] as bool,
+      returnNetWeight: returnNetWeight,
     );
   }
 }
@@ -116,6 +124,7 @@ class RecentWeighingStore {
     required String typeLabel,
     required String result,
     required bool allowMultiple,
+    bool returnNetWeight = false,
   }) => _invoke('append', {
     'categoryName': categoryName,
     'weightGrams': weightGrams,
@@ -125,6 +134,7 @@ class RecentWeighingStore {
     'result': result,
     'source': 'app',
     'allowMultiple': allowMultiple,
+    'returnNetWeight': returnNetWeight,
   });
 
   Future<List<WeighingRecord>> delete(String id) =>

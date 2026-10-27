@@ -366,6 +366,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         typeLabel: category.type.label,
         result: result,
         allowMultiple: category.allowMultiple,
+        returnNetWeight: category.returnNetWeight,
       );
       RecentWeighingStore.changes.value++;
       if (!mounted) return;
@@ -502,7 +503,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       dense: true,
                       title: Text(category.name),
                       subtitle: Text(
-                        '${category.type.label} · 皮重 ${category.tareGrams} 克 · 单份 ${category.singleServingGrams} 克'
+                        '${category.type.label} · 皮重 ${category.tareGrams} 克 · ${category.returnNetWeight ? '返回净重（g）' : '单份 ${category.singleServingGrams} 克'}'
                         '${category.aliases.isEmpty ? '' : ' · 别名：${category.aliases.join('、')}'}',
                       ),
                       selected: identical(_selected, category),
@@ -538,7 +539,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
                     child: SelectableText(
-                      '结果：$_result 份',
+                      '结果：$_result${_selected!.returnNetWeight ? '' : ' 份'}',
                       style: Theme.of(context).textTheme.headlineMedium,
                     ),
                   ),
@@ -603,7 +604,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   ],
                 ),
                 const Text(
-                  '点击右侧导入导出按钮，可导出规则文件保存或分享，再从文件导入。也可复制表格到 Excel 修改，再粘贴包含表头的 6 列批量导入；兼容旧 5 列，默认不允许多份。“其他”填写皮重，固定类别的皮重留空。同名品类会更新，其余品类保留。',
+                  '点击右侧导入导出按钮，可导出规则文件保存或分享，再从文件导入。也可复制表格到 Excel 修改，再粘贴包含表头的 7 列批量导入，最后一列“返回净重”填是或否；兼容旧 5、6 列，默认返回份数。“其他”填写皮重，固定类别的皮重留空。同名品类会更新，其余品类保留。',
                 ),
                 if (_categories.isEmpty) const Text('暂无品类。点击右侧加号录入。'),
                 ..._categories.map(
@@ -611,7 +612,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     child: ListTile(
                       title: Text(category.name),
                       subtitle: Text(
-                        '${category.type.label} · (称重 − ${category.tareGrams} 克) ÷ ${category.singleServingGrams} 克 · ${category.allowMultiple ? '允许多份，结果 ≥0.1 份' : '结果 0.1～0.9 份'}',
+                        category.returnNetWeight
+                            ? '${category.type.label} · 称重 − ${category.tareGrams} 克 · 返回净重（g）'
+                            : '${category.type.label} · (称重 − ${category.tareGrams} 克) ÷ ${category.singleServingGrams} 克 · ${category.allowMultiple ? '允许多份，结果 ≥0.1 份' : '结果 0.1～0.9 份'}',
                       ),
                       trailing: PopupMenuButton<String>(
                         enabled: !_transferringCatalog,
@@ -654,6 +657,7 @@ class _CategoryDialogState extends State<CategoryDialog> {
   late final TextEditingController name, aliases, grams, tare;
   late WeighingType type;
   late bool allowMultiple;
+  late bool returnNetWeight;
 
   @override
   void initState() {
@@ -665,6 +669,7 @@ class _CategoryDialogState extends State<CategoryDialog> {
     tare = TextEditingController(text: c?.customTareGrams?.toString() ?? '');
     type = c?.type ?? WeighingType.portionBox;
     allowMultiple = c?.allowMultiple ?? false;
+    returnNetWeight = c?.returnNetWeight ?? false;
   }
 
   @override
@@ -705,11 +710,14 @@ class _CategoryDialogState extends State<CategoryDialog> {
           .where((e) => e.isNotEmpty)
           .toList(),
       type: type,
-      singleServingGrams: double.parse(grams.text.trim()),
+      singleServingGrams: returnNetWeight
+          ? widget.original?.singleServingGrams ?? 1
+          : double.parse(grams.text.trim()),
       customTareGrams: type == WeighingType.other
           ? double.parse(tare.text.trim())
           : null,
       allowMultiple: allowMultiple,
+      returnNetWeight: returnNetWeight,
     );
     category.validate();
     Navigator.pop(context, category);
@@ -749,22 +757,32 @@ class _CategoryDialogState extends State<CategoryDialog> {
                     .toList(),
                 onChanged: (value) => setState(() => type = value!),
               ),
-              _number('单份原料重量（克）', grams),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('返回净重（g）'),
+                subtitle: const Text('返回毛重减皮重的克数，允许为 0'),
+                value: returnNetWeight,
+                onChanged: (value) => setState(() => returnNetWeight = value),
+              ),
+              if (!returnNetWeight) _number('单份原料重量（克）', grams),
               if (type == WeighingType.other)
                 _number('皮重（克）', tare, allowZero: true),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('允许多份'),
-                subtitle: const Text('勾选后结果最小 0.1 份，不设 0.9 份上限'),
-                value: allowMultiple,
-                onChanged: (value) => setState(() => allowMultiple = value!),
-              ),
+              if (!returnNetWeight)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('允许多份'),
+                  subtitle: const Text('勾选后结果最小 0.1 份，不设 0.9 份上限'),
+                  value: allowMultiple,
+                  onChanged: (value) => setState(() => allowMultiple = value!),
+                ),
               const SizedBox(height: 8),
               Text(
-                '计算：(称重 − ${type == WeighingType.other ? '自定义皮重' : '${type.tareGrams} 克'}) ÷ 单份重量；'
-                '最终份数向下保留 1 位小数'
-                '${allowMultiple ? '，最小 0.1 份、无 0.9 份上限' : '，限为 0.1～0.9 份'}；'
-                '括号内显示实际比例的 3 位小数',
+                returnNetWeight
+                    ? '计算：毛重 − 皮重，结果以 g 返回，不换算份数。'
+                    : '计算：(称重 − ${type == WeighingType.other ? '自定义皮重' : '${type.tareGrams} 克'}) ÷ 单份重量；'
+                          '最终份数向下保留 1 位小数'
+                          '${allowMultiple ? '，最小 0.1 份、无 0.9 份上限' : '，限为 0.1～0.9 份'}；'
+                          '括号内显示实际比例的 3 位小数',
               ),
             ],
           ),

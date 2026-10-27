@@ -14,7 +14,7 @@ void main() {
 
   test('六列表格可更新同名品类并保留多份设置', () {
     final imported = importCatalogTsv(
-      '$catalogTsvHeader\r\n'
+      '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)\t允许多份\r\n'
       '开封夹称重\taa大福\t新别名\t80\t\t否\r\n'
       '其他\tbb大福\t奶油、芝麻\t120\t35\t是\r\n',
     );
@@ -42,27 +42,37 @@ void main() {
 
   test('拒绝未知类别、无效重量和跨品类别名冲突', () {
     expect(
-      () => importCatalogTsv('$catalogTsvHeader\n未知\taa大福\t\t80\t\t否'),
+      () => importCatalogTsv(
+        '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)\t允许多份\n未知\taa大福\t\t80\t\t否',
+      ),
       throwsFormatException,
     );
     expect(
-      () => importCatalogTsv('$catalogTsvHeader\n份盒称重\taa大福\t\t0\t\t否'),
+      () => importCatalogTsv(
+        '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)\t允许多份\n份盒称重\taa大福\t\t0\t\t否',
+      ),
       throwsFormatException,
     );
     final conflicting = importCatalogTsv(
-      '$catalogTsvHeader\n开封夹称重\tbb大福\t旧别名\t80\t\t否',
+      '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)\t允许多份\n开封夹称重\tbb大福\t旧别名\t80\t\t否',
     );
     expect(() => mergeCatalog(existing, conflicting), throwsFormatException);
     expect(
-      () => importCatalogTsv('$catalogTsvHeader\n其他\tcc大福\t\t80\t\t否'),
+      () => importCatalogTsv(
+        '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)\t允许多份\n其他\tcc大福\t\t80\t\t否',
+      ),
       throwsFormatException,
     );
     expect(
-      () => importCatalogTsv('$catalogTsvHeader\n份盒称重\tcc大福\t\t80\t25\t否'),
+      () => importCatalogTsv(
+        '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)\t允许多份\n份盒称重\tcc大福\t\t80\t25\t否',
+      ),
       throwsFormatException,
     );
     expect(
-      () => importCatalogTsv('$catalogTsvHeader\n份盒称重\tcc大福\t\t80\t\t未知'),
+      () => importCatalogTsv(
+        '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)\t允许多份\n份盒称重\tcc大福\t\t80\t\t未知',
+      ),
       throwsFormatException,
     );
   });

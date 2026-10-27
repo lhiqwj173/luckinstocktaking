@@ -34,7 +34,9 @@ List<Category> importCatalogFile(String input) {
         entry['singleServingGrams'] is! num ||
         (entry['customTareGrams'] != null &&
             entry['customTareGrams'] is! num) ||
-        entry['allowMultiple'] is! bool) {
+        entry['allowMultiple'] is! bool ||
+        (entry.containsKey('returnNetWeight') &&
+            entry['returnNetWeight'] is! bool)) {
       throw FormatException('第 ${categories.length + 1} 项品类规则字段缺失或类型错误');
     }
     categories.add(Category.fromJson(entry));

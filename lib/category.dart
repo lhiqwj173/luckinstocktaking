@@ -20,6 +20,7 @@ class Category {
     required this.singleServingGrams,
     this.customTareGrams,
     this.allowMultiple = false,
+    this.returnNetWeight = false,
   });
   final String name;
   final List<String> aliases;
@@ -27,6 +28,7 @@ class Category {
   final double singleServingGrams;
   final double? customTareGrams;
   final bool allowMultiple;
+  final bool returnNetWeight;
   double get tareGrams =>
       type == WeighingType.other ? customTareGrams! : type.tareGrams!;
 
@@ -36,6 +38,9 @@ class Category {
     type: WeighingType.fromKey(json['type'] as String),
     singleServingGrams: (json['singleServingGrams'] as num).toDouble(),
     customTareGrams: (json['customTareGrams'] as num?)?.toDouble(),
+    returnNetWeight: json.containsKey('returnNetWeight')
+        ? json['returnNetWeight'] as bool
+        : false,
     allowMultiple: json.containsKey('allowMultiple')
         ? json['allowMultiple'] as bool
         : false,
@@ -48,6 +53,7 @@ class Category {
     'singleServingGrams': singleServingGrams,
     if (customTareGrams != null) 'customTareGrams': customTareGrams,
     'allowMultiple': allowMultiple,
+    'returnNetWeight': returnNetWeight,
   };
 
   void validate() {
@@ -79,6 +85,9 @@ class Category {
     final netGrams = weightGrams - tareGrams;
     if (netGrams < 0) {
       throw FormatException('${type.label}的称重不能低于皮重 $tareGrams 克，请检查输入重量');
+    }
+    if (returnNetWeight) {
+      return '${netWeightText(weightGrams, tareGrams)} g';
     }
     final ratio = netGrams / singleServingGrams;
     if (!ratio.isFinite) {
@@ -122,6 +131,7 @@ Category cloneCategory(List<Category> categories, Category source) {
     singleServingGrams: source.singleServingGrams,
     customTareGrams: source.customTareGrams,
     allowMultiple: source.allowMultiple,
+    returnNetWeight: source.returnNetWeight,
   );
 }
 
@@ -161,4 +171,33 @@ void validateCatalog(List<Category> categories) {
       }
     }
   }
+}
+
+/// 按输入数值的十进制表示相减，避免二进制减法污染净重尾数。
+String netWeightText(double gross, double tare) {
+  if (!gross.isFinite || !tare.isFinite || tare < 0 || gross < tare) {
+    throw const FormatException('毛重和皮重无效');
+  }
+  (BigInt, int) decimal(double value) {
+    final parts = value.toString().toLowerCase().split('e');
+    final mantissa = parts.first.split('.');
+    final fraction = mantissa.length == 2 ? mantissa[1] : '';
+    final exponent = parts.length == 2 ? int.parse(parts[1]) : 0;
+    return (
+      BigInt.parse('${mantissa[0]}$fraction'),
+      fraction.length - exponent,
+    );
+  }
+
+  final (g, gs) = decimal(gross);
+  final (t, ts) = decimal(tare);
+  final scale = [0, gs, ts].reduce((x, y) => x > y ? x : y);
+  final units =
+      g * BigInt.from(10).pow(scale - gs) - t * BigInt.from(10).pow(scale - ts);
+  if (units == BigInt.zero) return '0';
+  if (scale == 0) return units.toString();
+  final digits = units.toString().padLeft(scale + 1, '0');
+  return '${digits.substring(0, digits.length - scale)}.${digits.substring(digits.length - scale)}'
+      .replaceFirst(RegExp(r'0+$'), '')
+      .replaceFirst(RegExp(r'\.$'), '');
 }

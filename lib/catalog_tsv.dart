@@ -1,6 +1,7 @@
 import 'category.dart';
 
-const catalogTsvHeader = '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)\t允许多份';
+const catalogTsvHeader = '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)\t允许多份\t返回净重';
+const _sixColumnHeader = '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)\t允许多份';
 const _legacyCatalogTsvHeader = '称重类别\t品类\t别名\t单份重量(克)\t皮重(克)';
 
 String exportCatalogTsv(List<Category> categories) {
@@ -14,6 +15,7 @@ String exportCatalogTsv(List<Category> categories) {
       category.singleServingGrams.toString(),
       category.customTareGrams?.toString() ?? '',
       category.allowMultiple ? '是' : '否',
+      category.returnNetWeight ? '是' : '否',
     ];
     if (columns.any(
       (value) =>
@@ -34,16 +36,18 @@ List<Category> importCatalogTsv(String input) {
   if (lines.isNotEmpty && lines.last.isEmpty) lines.removeLast();
   if (lines.isEmpty ||
       (lines.first != catalogTsvHeader &&
+          lines.first != _sixColumnHeader &&
           lines.first != _legacyCatalogTsvHeader)) {
-    throw const FormatException('表格首行必须为五列旧格式，或增加“允许多份”的六列新格式');
+    throw const FormatException('表格首行必须为五列、六列或含“返回净重”的七列格式');
   }
   if (lines.length < 2) throw const FormatException('表格没有品类数据');
   final legacy = lines.first == _legacyCatalogTsvHeader;
+  final count = lines.first.split("\t").length;
   final categories = <Category>[];
   for (var index = 1; index < lines.length; index++) {
     final columns = lines[index].split('\t');
-    if (columns.length != (legacy ? 5 : 6)) {
-      throw FormatException('第 ${index + 1} 行必须有 ${legacy ? 5 : 6} 列');
+    if (columns.length != count) {
+      throw FormatException('第 ${index + 1} 行必须有 $count 列');
     }
     final type = switch (columns[0].trim()) {
       '份盒称重' => WeighingType.portionBox,
@@ -71,6 +75,13 @@ List<Category> importCatalogTsv(String input) {
             '否' => false,
             _ => throw FormatException('第 ${index + 1} 行的“允许多份”必须为“是”或“否”'),
           };
+    final returnNetWeight = count < 7
+        ? false
+        : switch (columns[6].trim()) {
+            '是' => true,
+            '否' => false,
+            _ => throw FormatException('第 ${index + 1} 行的“返回净重”必须为“是”或“否”'),
+          };
     final category = Category(
       name: columns[1].trim(),
       aliases: columns[2]
@@ -82,6 +93,7 @@ List<Category> importCatalogTsv(String input) {
       singleServingGrams: grams,
       customTareGrams: tare,
       allowMultiple: allowMultiple,
+      returnNetWeight: returnNetWeight,
     );
     category.validate();
     categories.add(category);
